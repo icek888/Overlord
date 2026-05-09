@@ -1839,11 +1839,6 @@ export function getNotificationScreenshot(notificationId: string): NotificationS
   };
 }
 
-export function clearNotificationScreenshots() {
-  db.run(`DELETE FROM notification_screenshots`);
-  console.log("[db] cleared notification screenshots");
-}
-
 export type NotificationRow = {
   id: string;
   clientId: string;
@@ -1910,14 +1905,17 @@ export function getNotificationHistory(limit: number = 500): NotificationRow[] {
   }));
 }
 
-const NOTIFICATION_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;
+const NOTIFICATION_RETENTION_DAYS = 3;
+const NOTIFICATION_RETENTION_MS = NOTIFICATION_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 
 export function pruneOldNotifications() {
   const cutoff = Date.now() - NOTIFICATION_RETENTION_MS;
   db.run(`DELETE FROM notification_screenshots WHERE notification_id IN (SELECT id FROM notifications WHERE ts < ?)`, cutoff);
+  db.run(`DELETE FROM notification_screenshots WHERE ts < ?`, cutoff);
+  db.run(`DELETE FROM notification_screenshots WHERE notification_id NOT IN (SELECT id FROM notifications)`);
   const result = db.run(`DELETE FROM notifications WHERE ts < ?`, cutoff);
   if (result.changes > 0) {
-    console.log(`[db] pruned ${result.changes} notifications older than 3 days`);
+    console.log(`[db] pruned ${result.changes} notifications older than ${NOTIFICATION_RETENTION_DAYS} days`);
   }
 }
 

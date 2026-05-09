@@ -137,10 +137,16 @@ for (const mode of ["powershell", "shell", "python"]) {
 /* ── Ace Editor ──────────────────────────────────────────────────── */
 
 console.log("Copying Ace Editor ...");
-copyFile(
-  path.join(NM, "ace-builds", "src-min-noconflict", "ace.js"),
-  path.join(VENDOR, "ace-builds", "ace.js"),
-);
+const aceSrc = path.join(NM, "ace-builds", "src-min-noconflict");
+const aceDst = path.join(VENDOR, "ace-builds");
+for (const file of [
+  "ace.js",
+  "mode-json.js",
+  "worker-json.js",
+  "theme-tomorrow_night.js",
+]) {
+  copyFile(path.join(aceSrc, file), path.join(aceDst, file));
+}
 
 /* ── Chart.js ────────────────────────────────────────────────────── */
 

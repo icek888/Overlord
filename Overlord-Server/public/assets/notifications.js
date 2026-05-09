@@ -16,6 +16,9 @@ const wsStatus = document.getElementById("ws-status");
 const listEl = document.getElementById("notification-list");
 const emptyState = document.getElementById("empty-state");
 const notificationScopeHint = document.getElementById("notification-scope-hint");
+const tableHead = document.getElementById("notification-thead");
+const searchInput = document.getElementById("notification-search");
+const resultHint = document.getElementById("notification-result-hint");
 
 // Keyword section
 const keywordSection = document.getElementById("keyword-section");
@@ -196,9 +199,163 @@ function wireToggle(inputEl, btnEl) {
   });
 }
 
-// ── Notification table row ────────────────────────────────────────────────────
-function renderRow(item, prepend = true) {
+// ── Unified table state (notifications + client events) ──────────────────────
+const tableState = {
+  entries: new Map(),
+  search: "",
+  sortBy: "ts",
+  sortDir: "desc",
+};
+
+let clientEventCounter = 0;
+
+function getEntryUid(item, kind) {
+  if (kind === "event") {
+    return `event:${item.clientId || ""}:${item.event || ""}:${item.ts || 0}:${++clientEventCounter}`;
+  }
+  return `notification:${item.id || `${item.clientId || ""}:${item.ts || ""}:${item.title || ""}`}`;
+}
+
+function getSortValue(entry, key) {
+  const item = entry.item;
+  if (key === "ts") return Number(item.ts) || 0;
+  if (key === "source") {
+    if (entry.kind === "event") return `event:${item.event || ""}`;
+    return `notif:${item.category || ""}`;
+  }
+  const value = item[key];
+  return value == null ? "" : String(value).toLowerCase();
+}
+
+function compareEntries(a, b) {
+  const key = tableState.sortBy;
+  const av = getSortValue(a, key);
+  const bv = getSortValue(b, key);
+  let cmp;
+  if (typeof av === "number" && typeof bv === "number") {
+    cmp = av - bv;
+  } else {
+    cmp = String(av).localeCompare(String(bv));
+  }
+  if (cmp === 0) {
+    cmp = (Number(a.item.ts) || 0) - (Number(b.item.ts) || 0);
+  }
+  return tableState.sortDir === "asc" ? cmp : -cmp;
+}
+
+function entryMatchesSearch(entry, query) {
+  if (!query) return true;
+  const item = entry.item;
+  const haystack = [
+    item.clientId,
+    item.user,
+    item.host,
+    item.title,
+    item.process,
+    item.processPath,
+    item.keyword,
+    entry.kind === "event" ? item.event : item.category,
+    item.os,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return haystack.includes(query);
+}
+
+function applyTableView() {
   if (!listEl) return;
+  const q = tableState.search.trim().toLowerCase();
+  const all = Array.from(tableState.entries.values());
+  const filtered = q ? all.filter((entry) => entryMatchesSearch(entry, q)) : all;
+  filtered.sort(compareEntries);
+
+  listEl.innerHTML = "";
+  for (const entry of filtered) {
+    listEl.appendChild(entry.element);
+  }
+
+  if (emptyState) {
+    if (all.length === 0) {
+      emptyState.textContent = "No notifications yet.";
+      emptyState.classList.remove("hidden");
+    } else if (filtered.length === 0) {
+      emptyState.textContent = "No notifications match the current search.";
+      emptyState.classList.remove("hidden");
+    } else {
+      emptyState.classList.add("hidden");
+    }
+  }
+
+  if (resultHint) {
+    if (q) {
+      resultHint.textContent = `${filtered.length} of ${all.length}`;
+    } else {
+      resultHint.textContent = all.length > 0 ? `${all.length} total` : "";
+    }
+  }
+}
+
+function trimEntries() {
+  if (tableState.entries.size <= MAX_ROWS) return;
+  const ordered = Array.from(tableState.entries.entries())
+    .sort((a, b) => (Number(b[1].item.ts) || 0) - (Number(a[1].item.ts) || 0));
+  const keep = new Set(ordered.slice(0, MAX_ROWS).map(([uid]) => uid));
+  for (const uid of tableState.entries.keys()) {
+    if (!keep.has(uid)) tableState.entries.delete(uid);
+  }
+}
+
+function upsertEntry(item, kind, isLive) {
+  const uid = getEntryUid(item, kind);
+  const existing = tableState.entries.get(uid);
+  if (existing) {
+    existing.item = { ...existing.item, ...item };
+    return existing;
+  }
+  const element =
+    kind === "event"
+      ? createClientEventRowElement(item)
+      : createNotificationRowElement(item, isLive);
+  const entry = { item, kind, element, isLive };
+  tableState.entries.set(uid, entry);
+  trimEntries();
+  return entry;
+}
+
+function addNotification(item, isLive) {
+  upsertEntry(item, "notification", isLive);
+  applyTableView();
+}
+
+function addClientEvent(item) {
+  upsertEntry(item, "event", true);
+  applyTableView();
+}
+
+function clearTable() {
+  tableState.entries.clear();
+  applyTableView();
+}
+
+// ── Client ID cell (collapsed by default, click to expand) ──────────────────
+const CLIENT_ID_SHORT_LEN = 8;
+
+function clientIdCellHtml(clientId) {
+  const id = String(clientId || "");
+  if (!id) {
+    return `<td class="py-2 pr-4 whitespace-nowrap text-slate-500">-</td>`;
+  }
+  if (id.length <= CLIENT_ID_SHORT_LEN) {
+    return `<td class="py-2 pr-4 whitespace-nowrap font-mono text-xs text-slate-300">${escapeHtml(id)}</td>`;
+  }
+  const safeFull = escapeHtml(id);
+  const safeShort = escapeHtml(id.slice(0, CLIENT_ID_SHORT_LEN));
+  return `<td class="py-2 pr-4 whitespace-nowrap"><button type="button" class="client-id-toggle inline-flex items-center gap-1 font-mono text-xs px-2 py-0.5 rounded border border-slate-700 bg-slate-900/80 hover:bg-slate-800 hover:border-slate-600 text-slate-300" data-full="${safeFull}" data-short="${safeShort}" title="${safeFull} (click to expand)"><span class="client-id-text">${safeShort}<span class="text-slate-500">…</span></span><i class="fa-solid fa-chevron-right text-[10px] text-slate-500"></i></button></td>`;
+}
+
+// ── Notification row factory ─────────────────────────────────────────────────
+function createNotificationRowElement(item, isLive) {
   const isClipboard = item.category === "clipboard";
   const sourceBadge = isClipboard
     ? `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-violet-900/60 text-violet-300 border border-violet-700/50"><i class="fa-solid fa-clipboard text-xs"></i> clipboard</span>`
@@ -207,7 +364,7 @@ function renderRow(item, prepend = true) {
   row.className = "border-t border-slate-800/60";
   row.innerHTML = `
     <td class="py-2 pr-4 whitespace-nowrap text-slate-400">${formatTime(item.ts)}</td>
-    <td class="py-2 pr-4 whitespace-nowrap">${escapeHtml(item.clientId || "-")}</td>
+    ${clientIdCellHtml(item.clientId)}
     <td class="py-2 pr-4 whitespace-nowrap">${escapeHtml(item.user || "-")}</td>
     <td class="py-2 pr-4 max-w-xl truncate" title="${escapeHtml(item.title || "")}">${escapeHtml(item.title || "-")}</td>
     <td class="py-2 pr-4 whitespace-nowrap">${escapeHtml(item.process || "-")}</td>
@@ -219,7 +376,8 @@ function renderRow(item, prepend = true) {
   const preview = row.querySelector(".preview-slot");
   if (preview) {
     const notificationId = item?.id || "";
-    if (!notificationId) {
+    const skipFetch = !notificationId || (!isLive && !item?.screenshotId);
+    if (skipFetch) {
       preview.textContent = "-";
       preview.className = "text-slate-500";
     } else {
@@ -280,16 +438,7 @@ function renderRow(item, prepend = true) {
     }
   }
 
-  if (prepend) {
-    listEl.prepend(row);
-  } else {
-    listEl.appendChild(row);
-  }
-
-  const rows = listEl.querySelectorAll("tr");
-  if (rows.length > MAX_ROWS) rows[rows.length - 1].remove();
-
-  if (emptyState) emptyState.classList.toggle("hidden", listEl.children.length > 0);
+  return row;
 }
 
 // ── Keyword section ───────────────────────────────────────────────────────────
@@ -559,14 +708,16 @@ function connect() {
   });
 
   subscribeReady((history) => {
-    if (listEl) listEl.innerHTML = "";
-    history.reverse().forEach((item) => renderRow(item, false));
-    if (emptyState) emptyState.classList.toggle("hidden", history.length > 0);
+    clearTable();
+    for (const item of history) {
+      upsertEntry(item, "notification", false);
+    }
+    applyTableView();
     markAllNotificationsRead();
   });
 
-  subscribeNotifications((item) => renderRow(item, true));
-  subscribeClientEvents((item) => renderClientEventRow(item));
+  subscribeNotifications((item) => addNotification(item, true));
+  subscribeClientEvents((item) => addClientEvent(item));
 }
 
 const CLIENT_EVENT_BADGE = {
@@ -575,15 +726,14 @@ const CLIENT_EVENT_BADGE = {
   client_purgatory: `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-amber-900/60 text-amber-300 border border-amber-700/50"><i class="fa-solid fa-hourglass-half text-xs"></i> purgatory</span>`,
 };
 
-function renderClientEventRow(item) {
-  if (!listEl) return;
+function createClientEventRowElement(item) {
   const badge = CLIENT_EVENT_BADGE[item.event] ||
     `<span class="text-xs text-slate-400">${escapeHtml(item.event)}</span>`;
   const row = document.createElement("tr");
   row.className = "border-t border-slate-800/60";
   row.innerHTML = `
     <td class="py-2 pr-4 whitespace-nowrap text-slate-400">${formatTime(item.ts)}</td>
-    <td class="py-2 pr-4 whitespace-nowrap">${escapeHtml(item.clientId || "-")}</td>
+    ${clientIdCellHtml(item.clientId)}
     <td class="py-2 pr-4 whitespace-nowrap">${escapeHtml(item.user || "-")}</td>
     <td class="py-2 pr-4 max-w-xl truncate italic text-slate-400">client event</td>
     <td class="py-2 pr-4 whitespace-nowrap">${escapeHtml(item.os || "-")}</td>
@@ -591,10 +741,7 @@ function renderClientEventRow(item) {
     <td class="py-2 pr-4 whitespace-nowrap">${badge}</td>
     <td class="py-2 pr-4"></td>
   `;
-  listEl.prepend(row);
-  const rows = listEl.querySelectorAll("tr");
-  if (rows.length > MAX_ROWS) rows[rows.length - 1].remove();
-  if (emptyState) emptyState.classList.add("hidden");
+  return row;
 }
 
 // ── Preview modal ─────────────────────────────────────────────────────────────
@@ -700,6 +847,76 @@ function wireEventChannelsSave() {
   });
 }
 
+function updateSortIndicators() {
+  if (!tableHead) return;
+  const headers = tableHead.querySelectorAll("th[data-sort-key]");
+  for (const th of headers) {
+    const icon = th.querySelector(".sort-icon");
+    if (!icon) continue;
+    const key = th.getAttribute("data-sort-key");
+    if (key === tableState.sortBy) {
+      icon.className = `sort-icon fa-solid ${tableState.sortDir === "asc" ? "fa-sort-up" : "fa-sort-down"} text-xs text-slate-300`;
+      th.classList.add("text-slate-200");
+    } else {
+      icon.className = "sort-icon fa-solid fa-sort text-xs text-slate-600";
+      th.classList.remove("text-slate-200");
+    }
+  }
+}
+
+function wireClientIdToggle() {
+  if (!listEl) return;
+  listEl.addEventListener("click", (event) => {
+    const btn = event.target.closest(".client-id-toggle");
+    if (!btn) return;
+    const textEl = btn.querySelector(".client-id-text");
+    const icon = btn.querySelector("i");
+    if (!textEl) return;
+    const expanded = btn.classList.toggle("expanded");
+    if (expanded) {
+      textEl.textContent = btn.dataset.full || "";
+      if (icon) icon.className = "fa-solid fa-chevron-left text-[10px] text-slate-500";
+      btn.title = `${btn.dataset.full} (click to collapse)`;
+    } else {
+      textEl.innerHTML = `${escapeHtml(btn.dataset.short || "")}<span class="text-slate-500">…</span>`;
+      if (icon) icon.className = "fa-solid fa-chevron-right text-[10px] text-slate-500";
+      btn.title = `${btn.dataset.full} (click to expand)`;
+    }
+  });
+}
+
+function wireTableControls() {
+  if (tableHead) {
+    tableHead.addEventListener("click", (event) => {
+      const th = event.target.closest("th[data-sort-key]");
+      if (!th) return;
+      const key = th.getAttribute("data-sort-key");
+      if (!key) return;
+      if (tableState.sortBy === key) {
+        tableState.sortDir = tableState.sortDir === "asc" ? "desc" : "asc";
+      } else {
+        tableState.sortBy = key;
+        tableState.sortDir = key === "ts" ? "desc" : "asc";
+      }
+      updateSortIndicators();
+      applyTableView();
+    });
+  }
+
+  if (searchInput) {
+    let debounce = null;
+    searchInput.addEventListener("input", () => {
+      if (debounce) clearTimeout(debounce);
+      debounce = setTimeout(() => {
+        tableState.search = searchInput.value || "";
+        applyTableView();
+      }, 100);
+    });
+  }
+
+  updateSortIndicators();
+}
+
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 initWebhookTemplateEditor();
 wireKeywordSave();
@@ -711,5 +928,7 @@ wireEventNotifSave();
 wireEventChannelsSave();
 updateDesktopPermissionUi();
 wireDesktopPermissionBtn();
+wireTableControls();
+wireClientIdToggle();
 initRoleUi();
 connect();
