@@ -458,6 +458,25 @@ When enabled:
 - Health checks should use `http://localhost:$PORT/health` inside the container
 - Don't expose the internal container HTTP port directly to the internet
 
+### Source IP behind a domain / reverse proxy
+
+If the dashboard, audit log, or IP bans show all agents as `172.x.x.x` (or some other proxy/bridge IP), something between the agent and Bun is rewriting the source IP. Two independent flags govern this:
+
+- `OVERLORD_TLS_OFFLOAD` — TLS terminates at the proxy; Overlord runs plain HTTP internally.
+- `OVERLORD_TRUST_PROXY` — honor `X-Forwarded-For` / `X-Real-IP` / `CF-Connecting-IP` so dashboard/audit/IP-bans see the real client. Auto-enabled when `TLS_OFFLOAD=true`.
+
+Common shapes:
+
+| Setup | `TLS_OFFLOAD` | `TRUST_PROXY` |
+|---|---|---|
+| Domain, no proxy (Linux host networking; certbot inside Overlord; Cloudflare DNS-only) | `false` | `false` |
+| Domain, proxy does TLS (Render, nginx terminating TLS → http upstream) | `true` | auto (`true`) |
+| Domain, proxy in front but Overlord still does TLS (Cloudflare orange-cloud Full Strict; nginx with `proxy_pass https://`) | `false` | `true` |
+
+Only enable `OVERLORD_TRUST_PROXY` when a trusted reverse proxy is in front. If Overlord is directly exposed and you enable it, agents can spoof their source IP by sending their own `X-Forwarded-For` header, breaking IP bans and audit accuracy. The upstream proxy also has to be configured to inject the header (Cloudflare does by default; nginx/Caddy/Traefik need explicit directives).
+
+If you're using `docker-compose.windows.yml` or `docker-compose.quickstart.yml` (Docker Desktop bridge networking) with **no** reverse proxy, Docker itself rewrites source IPs to the bridge gateway and there is no header to recover from — `TRUST_PROXY` cannot help. Either switch to Linux host networking or put a real reverse proxy in front.
+
 ### Notes
 
 - Keep `HOST=0.0.0.0` inside the container. Limit exposure with `OVERLORD_PUBLISH_HOST`, not the bind host.
