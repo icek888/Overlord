@@ -653,6 +653,9 @@ func runSession(ctx context.Context, cancel context.CancelFunc, conn *websocket.
 	hello.Elevation = sysinfo.Elevation()
 	hello.Permissions = sysinfo.DarwinPermissions()
 	hello.HostArch = sysinfo.HostArch()
+	if cfg.FetchPublicIP {
+		hello.PublicIP = config.FetchPublicIPAddress()
+	}
 
 	if err := wire.WriteMsg(ctx, env.Conn, hello); err != nil {
 		return fmt.Errorf("send hello: %w", err)

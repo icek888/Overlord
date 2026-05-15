@@ -115,6 +115,7 @@ export async function handleBuildRoutes(
         useDonut,
         useLinuxShellcode,
         shellcodeConsole,
+        fetchPublicIP,
       } = body;
 
       if (!platforms || !Array.isArray(platforms) || platforms.length === 0) {
@@ -386,6 +387,7 @@ export async function handleBuildRoutes(
         useDonut: !!useDonut,
         useLinuxShellcode: !!useLinuxShellcode,
         shellcodeConsole: !!shellcodeConsole,
+        fetchPublicIP: !!fetchPublicIP,
       }).finally(() => {
         if (rateLimitActive) recordBuildEnd(user.userId);
       });

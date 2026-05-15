@@ -23,6 +23,7 @@ type Hello struct {
 	IsAdmin     bool            `msgpack:"isAdmin,omitempty"`
 	Elevation   string          `msgpack:"elevation,omitempty"`
 	Permissions map[string]bool `msgpack:"permissions,omitempty"`
+	PublicIP    string          `msgpack:"publicIP,omitempty"`
 }
 
 type EnrollmentChallenge struct {

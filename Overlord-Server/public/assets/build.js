@@ -127,6 +127,7 @@ function collectFormSettings() {
     noPrinting: document.querySelector('input[name="no-printing"]')?.checked ?? false,
     enableKeylogger: document.querySelector('input[name="enable-keylogger"]')?.checked ?? true,
     enableWebrtc: document.querySelector('input[name="enable-webrtc"]')?.checked ?? false,
+    fetchPublicIP: document.querySelector('input[name="fetch-public-ip"]')?.checked ?? false,
     obfuscate: document.querySelector('input[name="obfuscate"]')?.checked ?? false,
     garbleLiterals: document.querySelector('input[name="garble-literals"]')?.checked ?? false,
     garbleTiny: document.querySelector('input[name="garble-tiny"]')?.checked ?? false,
@@ -185,6 +186,7 @@ function applyFormSettings(settings) {
   if (settings.noPrinting !== undefined) setCb('input[name="no-printing"]', settings.noPrinting);
   if (settings.enableKeylogger !== undefined) setCb('input[name="enable-keylogger"]', settings.enableKeylogger);
   if (settings.enableWebrtc !== undefined) setCb('input[name="enable-webrtc"]', settings.enableWebrtc);
+  if (settings.fetchPublicIP !== undefined) setCb('input[name="fetch-public-ip"]', settings.fetchPublicIP);
   if (settings.obfuscate !== undefined) setCb('input[name="obfuscate"]', settings.obfuscate);
   if (settings.garbleLiterals !== undefined) setCb('input[name="garble-literals"]', settings.garbleLiterals);
   if (settings.garbleTiny !== undefined) setCb('input[name="garble-tiny"]', settings.garbleTiny);
@@ -1456,6 +1458,7 @@ form?.addEventListener("submit", async (e) => {
     noPrinting,
     disableKeylogger: !enableKeylogger,
     enableWebrtc: form.querySelector('input[name="enable-webrtc"]')?.checked || false,
+    fetchPublicIP: form.querySelector('input[name="fetch-public-ip"]')?.checked || false,
     outputName: outputNameVal || undefined,
     garbleLiterals: obfuscate ? garbleLiterals : undefined,
     garbleTiny: obfuscate ? garbleTiny : undefined,

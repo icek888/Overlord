@@ -110,6 +110,10 @@ export async function handleHello(
   if (ip) {
     info.ip = ip;
   }
+  const reportedPublicIP = sanitizeInfoString((payload as any).publicIP, 64);
+  if (reportedPublicIP && /^[0-9a-fA-F:.]{3,45}$/.test(reportedPublicIP)) {
+    info.ip = reportedPublicIP;
+  }
   info.hwid = sanitizeInfoString((payload as any).hwid);
   info.host = sanitizeInfoString(payload.host);
   info.os = sanitizeInfoString(payload.os);
@@ -139,7 +143,7 @@ export async function handleHello(
   info.gpu = sanitizeInfoString((payload as any).gpu) || info.gpu;
   info.ram = sanitizeInfoString((payload as any).ram, 64) || info.ram;
   const geoip = await getGeoip();
-  const geo = ip ? geoip.lookup(ip) : undefined;
+  const geo = info.ip ? geoip.lookup(info.ip) : undefined;
   const countryRaw =
     geo?.country || (payload as any).country || info.country || "ZZ";
   const country = /^[A-Z]{2}$/i.test(countryRaw)

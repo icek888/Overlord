@@ -31,6 +31,7 @@ export type Hello = {
   country?: string;
   publicKey?: string;
   signature?: string;
+  publicIP?: string;
 };
 
 export type EnrollmentChallenge = {
