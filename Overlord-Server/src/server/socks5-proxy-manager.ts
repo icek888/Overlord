@@ -38,6 +38,8 @@ type TunnelConnection = {
   connected: boolean;
   /** buffer data received from SOCKS client before agent confirms */
   pendingData: Buffer[];
+  /** data destined for the SOCKS client that the kernel buffer rejected; flushed on drain */
+  writeQueue: Buffer[];
 };
 
 type ProxySocketData = {
@@ -110,6 +112,7 @@ export function startProxy(
             socket,
             connected: false,
             pendingData: [],
+            writeQueue: [],
           });
           logger.debug(
             `[socks5] new connection ${connectionId} on port ${port}`,
@@ -147,6 +150,14 @@ export function startProxy(
             }
           }
           logger.debug(`[socks5] connection ${connId} closed`);
+        },
+
+        drain(socket) {
+          const entry = activeProxies.get(socket.data.proxyPort);
+          if (!entry) return;
+          const tunnel = entry.connections.get(socket.data.connectionId);
+          if (!tunnel) return;
+          flushWriteQueue(tunnel);
         },
 
         error(socket, err) {
@@ -228,13 +239,47 @@ export function handleProxyTunnelData(
     if (entry.clientId !== clientId) continue;
     const tunnel = entry.connections.get(connectionId);
     if (tunnel) {
-      try {
-        tunnel.socket.write(data);
-      } catch {
-        entry.connections.delete(connectionId);
-      }
+      writeToTunnelSocket(tunnel, data);
       return;
     }
+  }
+}
+
+function writeToTunnelSocket(
+  tunnel: TunnelConnection,
+  data: Buffer | Uint8Array,
+): void {
+  const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+  if (tunnel.writeQueue.length > 0) {
+    tunnel.writeQueue.push(buf);
+    return;
+  }
+  let written: number;
+  try {
+    written = tunnel.socket.write(buf);
+  } catch {
+    return;
+  }
+  if (written < buf.length) {
+    tunnel.writeQueue.push(buf.subarray(Math.max(written, 0)));
+  }
+}
+
+function flushWriteQueue(tunnel: TunnelConnection): void {
+  while (tunnel.writeQueue.length > 0) {
+    const next = tunnel.writeQueue[0];
+    let written: number;
+    try {
+      written = tunnel.socket.write(next);
+    } catch {
+      tunnel.writeQueue.length = 0;
+      return;
+    }
+    if (written < next.length) {
+      tunnel.writeQueue[0] = next.subarray(Math.max(written, 0));
+      return;
+    }
+    tunnel.writeQueue.shift();
   }
 }
 
@@ -326,6 +371,14 @@ function handleSocksData(
       return;
     }
     if (buf.length < 2 + nmethods) return;
+
+    const methods = buf.subarray(2, 2 + nmethods);
+    if (!methods.includes(0x00)) {
+      socket.write(Buffer.from([0x05, 0xff]));
+      socket.end();
+      entry.connections.delete(connectionId);
+      return;
+    }
 
     socket.write(Buffer.from([0x05, 0x00]));
     socket.data.phase = "request";

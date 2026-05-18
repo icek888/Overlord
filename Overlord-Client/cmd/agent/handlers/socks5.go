@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strconv"
 	"sync"
 	"time"
 
@@ -63,7 +64,7 @@ func HandleProxyConnect(ctx context.Context, env *runtime.Env, connID string, pa
 		})
 	}
 
-	target := fmt.Sprintf("%s:%d", host, port)
+	target := net.JoinHostPort(host, strconv.Itoa(port))
 
 	goSafe("tunnel-dial-"+connID, nil, func() {
 
