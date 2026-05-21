@@ -221,7 +221,7 @@ function parseMaxHttpBodyBytes(): number {
     }
     logger.warn(`[HTTP] Invalid OVERLORD_MAX_HTTP_BODY_BYTES=${raw}; using default`);
   }
-  return 100 * 1024 * 1024;
+  return 1024 * 1024 * 1024;
 }
 
 const MAX_HTTP_BODY_BYTES = parseMaxHttpBodyBytes();

@@ -42,7 +42,7 @@ func Loop(ctx context.Context, env *rt.Env) {
 			restore := BypassResolutionCap()
 			defer restore()
 			var err error
-			if goruntime.GOOS == "windows" && activeDisplays() > 1 {
+			if goruntime.GOOS == "windows" {
 				err = captureAllDisplaysAndSend(ctx, env)
 			} else {
 				err = CaptureAndSend(ctx, env)

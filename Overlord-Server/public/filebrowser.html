@@ -322,7 +322,133 @@
       }
       @media (max-width: 1023px) {
         #sidebar { display: none !important; }
+        #preview-pane-host { display: none !important; }
       }
+
+      /* Pin star button next to filename */
+      .pin-star-btn {
+        opacity: 0;
+        transition: opacity 0.15s ease, color 0.15s ease;
+        background: transparent;
+        border: 0;
+        padding: 2px 4px;
+        color: rgb(100 116 139);
+        cursor: pointer;
+      }
+      .file-item:hover .pin-star-btn { opacity: 0.7; }
+      .pin-star-btn:hover { color: #facc15; opacity: 1 !important; }
+      .pin-star-btn.pinned { color: #facc15; opacity: 1 !important; }
+
+      /* Drive bar */
+      .drive-usage-bar {
+        height: 3px;
+        background-color: rgba(51, 65, 85, 0.6);
+        border-radius: 2px;
+        overflow: hidden;
+        margin-top: 2px;
+      }
+      .drive-usage-fill {
+        height: 100%;
+        background: linear-gradient(90deg, #3b82f6, #6366f1);
+        border-radius: 2px;
+        transition: width 0.3s ease;
+      }
+      .drive-usage-fill.warn { background: linear-gradient(90deg, #f59e0b, #ef4444); }
+      .drive-usage-fill.crit { background: linear-gradient(90deg, #ef4444, #dc2626); }
+
+      /* Preview pane */
+      #preview-pane-host {
+        width: 320px;
+        flex-shrink: 0;
+        align-self: flex-start;
+        position: sticky;
+        top: 5rem;
+        max-height: calc(100vh - 6rem);
+        overflow-y: auto;
+      }
+      #preview-pane {
+        /* host handles sticky + scroll; inner stays in normal flow */
+      }
+      /* Custom scrollbar for sidebar columns */
+      .sidebar-scroll::-webkit-scrollbar,
+      #preview-pane-host::-webkit-scrollbar { width: 8px; }
+      .sidebar-scroll::-webkit-scrollbar-track,
+      #preview-pane-host::-webkit-scrollbar-track { background: transparent; }
+      .sidebar-scroll::-webkit-scrollbar-thumb,
+      #preview-pane-host::-webkit-scrollbar-thumb { background: rgba(71,85,105,0.6); border-radius: 4px; }
+      .sidebar-scroll::-webkit-scrollbar-thumb:hover,
+      #preview-pane-host::-webkit-scrollbar-thumb:hover { background: rgba(100,116,139,0.8); }
+      #preview-pane.empty .preview-empty { display: flex; }
+      #preview-pane .preview-empty { display: none; }
+      #preview-thumb-box img {
+        max-width: 100%;
+        max-height: 200px;
+        display: block;
+        margin: 0 auto;
+        border-radius: 0.25rem;
+        background: #0f172a;
+      }
+      #preview-text-head {
+        font-family: "Courier New", monospace;
+        font-size: 11px;
+        line-height: 1.4;
+        white-space: pre-wrap;
+        word-break: break-all;
+        color: #cbd5e1;
+        background: #0f172a;
+        border-radius: 0.25rem;
+        padding: 0.5rem;
+        max-height: 240px;
+        overflow: auto;
+      }
+      #preview-meta-list { font-size: 11px; }
+      #preview-meta-list dt { color: rgb(100 116 139); text-transform: uppercase; letter-spacing: 0.04em; font-size: 10px; }
+      #preview-meta-list dd { color: #e2e8f0; word-break: break-all; margin-bottom: 0.5rem; }
+      #preview-hash-value {
+        font-family: "Courier New", monospace;
+        font-size: 10px;
+        word-break: break-all;
+        color: #93c5fd;
+      }
+
+      /* Hex viewer modal */
+      .hex-viewer-modal {
+        position: fixed;
+        inset: 0;
+        background-color: rgba(0, 0, 0, 0.85);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        z-index: 2200;
+      }
+      .hex-viewer-modal.show { display: flex; }
+      .hex-viewer-content {
+        background-color: #0f172a;
+        border: 1px solid #334155;
+        border-radius: 0.75rem;
+        width: 92%;
+        max-width: 900px;
+        max-height: 88vh;
+        display: flex;
+        flex-direction: column;
+        box-shadow: 0 25px 50px -12px rgb(0 0 0 / 0.6);
+      }
+      #hex-viewer-body {
+        flex: 1;
+        min-height: 0;
+        overflow: auto;
+        padding: 0.75rem 1rem;
+        font-family: "Courier New", monospace;
+        font-size: 12px;
+        line-height: 1.45;
+        color: #cbd5e1;
+        background: #0b1220;
+      }
+      #hex-viewer-body .hex-row { display: flex; gap: 1.5rem; white-space: pre; }
+      #hex-viewer-body .hex-off { color: rgb(100 116 139); min-width: 80px; }
+      #hex-viewer-body .hex-bytes { color: #93c5fd; }
+      #hex-viewer-body .hex-ascii { color: #fde68a; }
+      #hex-viewer-body .hex-ascii .np { color: rgb(71 85 105); }
     </style>
     <script defer src="/assets/toast.js"></script>
     <script defer src="/assets/ripple.js"></script>
@@ -334,7 +460,26 @@
       <div class="max-w-[1600px] mx-auto flex gap-4">
         <!-- Sidebar -->
         <aside id="sidebar" class="w-52 flex-shrink-0 hidden lg:block">
-          <div class="sticky top-6 flex flex-col gap-3">
+          <div class="sticky flex flex-col gap-3 sidebar-scroll" style="top: 5rem; max-height: calc(100vh - 6rem); overflow-y: auto;">
+            <div class="bg-slate-900/70 border border-slate-800 rounded-lg overflow-hidden">
+              <div class="px-3 py-2.5 border-b border-slate-700/50 flex items-center justify-between gap-2">
+                <div class="flex items-center gap-2">
+                  <i class="fa-solid fa-star text-yellow-400 text-xs"></i>
+                  <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Pinned</span>
+                </div>
+                <button
+                  id="sidebar-pin-current-btn"
+                  class="text-[10px] text-slate-400 hover:text-blue-300 transition-colors"
+                  title="Pin current path"
+                  type="button"
+                >
+                  <i class="fa-solid fa-plus"></i>
+                </button>
+              </div>
+              <div id="sidebar-pinned" class="p-1.5">
+                <div class="text-xs text-slate-500 text-center py-3">No pinned paths.<br><span class="text-slate-600">Right-click any folder.</span></div>
+              </div>
+            </div>
             <div class="bg-slate-900/70 border border-slate-800 rounded-lg overflow-hidden">
               <div class="px-3 py-2.5 border-b border-slate-700/50 flex items-center gap-2">
                 <i class="fa-solid fa-bookmark text-blue-400 text-xs"></i>
@@ -599,6 +744,60 @@
           </div>
         </div>
         </div>
+
+        <!-- Preview pane -->
+        <aside id="preview-pane-host" class="hidden lg:block">
+          <div id="preview-pane" class="bg-slate-900/70 border border-slate-800 rounded-lg empty">
+            <div class="px-3 py-2.5 border-b border-slate-700/50 flex items-center justify-between gap-2">
+              <div class="flex items-center gap-2 min-w-0">
+                <i class="fa-solid fa-eye text-blue-400 text-xs flex-shrink-0"></i>
+                <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Preview</span>
+              </div>
+              <button id="preview-pane-toggle" class="text-[10px] text-slate-400 hover:text-blue-300 transition-colors" title="Hide preview pane" type="button">
+                <i class="fa-solid fa-eye-slash"></i>
+              </button>
+            </div>
+            <div class="p-3 space-y-3">
+              <div class="preview-empty flex-col items-center justify-center text-center text-xs text-slate-500 py-10">
+                <i class="fa-solid fa-mouse-pointer text-2xl mb-2 text-slate-600"></i>
+                <div>Click a file to preview.</div>
+              </div>
+
+              <div id="preview-active" class="hidden space-y-3">
+                <div id="preview-thumb-box" class="bg-slate-950/50 border border-slate-800 rounded p-2 min-h-[80px] flex items-center justify-center"></div>
+
+                <div class="text-xs font-medium text-slate-200 truncate" id="preview-name">--</div>
+                <div class="text-[10px] text-slate-500 break-all" id="preview-path">--</div>
+
+                <dl id="preview-meta-list" class="grid grid-cols-2 gap-x-2"></dl>
+
+                <div id="preview-text-head-host" class="hidden">
+                  <div class="text-[10px] uppercase text-slate-500 mb-1 tracking-wide">First 4 KB</div>
+                  <div id="preview-text-head"></div>
+                </div>
+
+                <div class="flex flex-col gap-1.5">
+                  <button id="preview-hex-btn" class="inline-flex items-center justify-center gap-2 px-2 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-xs text-slate-100" type="button">
+                    <i class="fa-solid fa-magnifying-glass-chart"></i> Hex peek
+                  </button>
+                  <button id="preview-hash-btn" class="inline-flex items-center justify-center gap-2 px-2 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-xs text-slate-100" type="button">
+                    <i class="fa-solid fa-fingerprint"></i> SHA-256
+                  </button>
+                </div>
+                <div id="preview-hash-result" class="hidden">
+                  <div class="text-[10px] uppercase text-slate-500 mb-1 tracking-wide">SHA-256</div>
+                  <div id="preview-hash-value" class="cursor-pointer" title="Click to copy"></div>
+                  <div id="preview-hash-known" class="mt-1 text-[10px] text-emerald-400 hidden"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="mt-2 flex justify-center hidden" id="preview-pane-show-btn-host">
+            <button id="preview-pane-show-btn" class="inline-flex items-center gap-2 px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-xs text-slate-200" type="button">
+              <i class="fa-solid fa-eye"></i> Show preview
+            </button>
+          </div>
+        </aside>
       </div>
     </main>
 
@@ -633,8 +832,43 @@
         <i class="fa-solid fa-ghost mr-2"></i> Silent Execute
       </div>
       <div class="context-menu-separator" style="height:1px;background:#334155;margin:0.25rem 0;"></div>
+      <div class="context-menu-item" data-action="pin">
+        <i class="fa-solid fa-star mr-2"></i> Pin to sidebar
+      </div>
+      <div class="context-menu-item" data-action="unpin">
+        <i class="fa-solid fa-star-half-stroke mr-2"></i> Unpin
+      </div>
+      <div class="context-menu-item" data-action="hex_peek">
+        <i class="fa-solid fa-magnifying-glass-chart mr-2"></i> Hex peek (4 KB)
+      </div>
+      <div class="context-menu-item" data-action="hash">
+        <i class="fa-solid fa-fingerprint mr-2"></i> SHA-256
+      </div>
+      <div class="context-menu-separator" style="height:1px;background:#334155;margin:0.25rem 0;"></div>
       <div class="context-menu-item text-red-400" data-action="delete">
         <i class="fa-solid fa-trash mr-2"></i> Delete
+      </div>
+    </div>
+
+    <!-- Hex viewer modal -->
+    <div id="hex-viewer-modal" class="hex-viewer-modal">
+      <div class="hex-viewer-content">
+        <div class="px-4 py-3 bg-slate-800 border-b border-slate-700 flex items-center justify-between flex-shrink-0">
+          <div class="flex items-center gap-3 min-w-0">
+            <i class="fa-solid fa-magnifying-glass-chart text-blue-400 flex-shrink-0"></i>
+            <span class="font-semibold truncate" id="hex-viewer-file">--</span>
+          </div>
+          <div class="flex items-center gap-2 flex-shrink-0 ml-2">
+            <span id="hex-viewer-info" class="text-xs text-slate-400"></span>
+            <button id="hex-viewer-copy-btn" class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-white" type="button">
+              <i class="fa-solid fa-copy"></i> Copy hex
+            </button>
+            <button id="hex-viewer-close-btn" class="px-2 py-1 rounded hover:text-red-400 text-slate-400 transition-colors" type="button">
+              <i class="fa-solid fa-times"></i>
+            </button>
+          </div>
+        </div>
+        <div id="hex-viewer-body"></div>
       </div>
     </div>
 
@@ -768,6 +1002,6 @@
     <input type="file" id="file-input" style="display: none" multiple />
 
     <script type="module" src="/assets/nav.js"></script>
-    <script type="module" src="/assets/filebrowser.js?v=iconsthumbs-20260517-1"></script>
+    <script type="module" src="/assets/filebrowser.js?v=pinpreviewhex-20260520-3"></script>
   </body>
 </html>

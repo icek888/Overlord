@@ -4,11 +4,11 @@ import (
 	"context"
 	"log"
 
-	"overlord-client/cmd/agent/runtime"
+	agentRuntime "overlord-client/cmd/agent/runtime"
 	"overlord-client/cmd/agent/wire"
 )
 
-func HandleProcessList(ctx context.Context, env *runtime.Env, cmdID string) error {
+func HandleProcessList(ctx context.Context, env *agentRuntime.Env, cmdID string) error {
 	log.Printf("process_list: listing all processes")
 
 	processes := []wire.ProcessInfo{}
@@ -32,7 +32,7 @@ func HandleProcessList(ctx context.Context, env *runtime.Env, cmdID string) erro
 	return wire.WriteMsg(ctx, env.Conn, result)
 }
 
-func HandleProcessKill(ctx context.Context, env *runtime.Env, cmdID string, pid int32) error {
+func HandleProcessKill(ctx context.Context, env *agentRuntime.Env, cmdID string, pid int32) error {
 	//garble:controlflow block_splits=10 junk_jumps=10 flatten_passes=2
 	log.Printf("process_kill: %d", pid)
 
@@ -52,7 +52,7 @@ func HandleProcessKill(ctx context.Context, env *runtime.Env, cmdID string, pid 
 	return wire.WriteMsg(ctx, env.Conn, result)
 }
 
-func HandleProcessSuspend(ctx context.Context, env *runtime.Env, cmdID string, pid int32) error {
+func HandleProcessSuspend(ctx context.Context, env *agentRuntime.Env, cmdID string, pid int32) error {
 	log.Printf("process_suspend: %d", pid)
 
 	err := suspendProcess(pid)
@@ -71,7 +71,7 @@ func HandleProcessSuspend(ctx context.Context, env *runtime.Env, cmdID string, p
 	return wire.WriteMsg(ctx, env.Conn, result)
 }
 
-func HandleProcessResume(ctx context.Context, env *runtime.Env, cmdID string, pid int32) error {
+func HandleProcessResume(ctx context.Context, env *agentRuntime.Env, cmdID string, pid int32) error {
 	log.Printf("process_resume: %d", pid)
 
 	err := resumeProcess(pid)
@@ -88,4 +88,28 @@ func HandleProcessResume(ctx context.Context, env *runtime.Env, cmdID string, pi
 		Message:   errMsg,
 	}
 	return wire.WriteMsg(ctx, env.Conn, result)
+}
+
+func HandleProcessIcon(ctx context.Context, env *agentRuntime.Env, cmdID string, items []wire.FileIconRequestItem) error {
+	out := make([]wire.FileIconResultItem, 0, len(items))
+	for _, item := range items {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		png, err := extractFileIconPNG(item.Path, item.Ext)
+		ri := wire.FileIconResultItem{Key: item.Key}
+		if err != nil {
+			ri.Error = err.Error()
+		} else {
+			ri.PNG = png
+		}
+		out = append(out, ri)
+	}
+	return wire.WriteMsg(ctx, env.Conn, wire.FileIconResult{
+		Type:      "process_icon_result",
+		CommandID: cmdID,
+		Icons:     out,
+	})
 }

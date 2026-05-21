@@ -22,11 +22,12 @@ var (
 	modKernel32                  = windows.NewLazySystemDLL("kernel32.dll")
 	modPsapi                     = windows.NewLazySystemDLL("psapi.dll")
 	modNtdll                     = windows.NewLazySystemDLL("ntdll.dll")
-	procEnumProcesses            = modPsapi.NewProc("EnumProcesses")
-	procGetProcessMemoryInfo     = modPsapi.NewProc("GetProcessMemoryInfo")
-	procOpenProcess              = modKernel32.NewProc("OpenProcess")
-	procGetProcessImageFileNameW = modPsapi.NewProc("GetProcessImageFileNameW")
-	procGetProcessTimes          = modKernel32.NewProc("GetProcessTimes")
+	procEnumProcesses                = modPsapi.NewProc("EnumProcesses")
+	procGetProcessMemoryInfo         = modPsapi.NewProc("GetProcessMemoryInfo")
+	procOpenProcess                  = modKernel32.NewProc("OpenProcess")
+	procGetProcessImageFileNameW     = modPsapi.NewProc("GetProcessImageFileNameW")
+	procGetProcessTimes              = modKernel32.NewProc("GetProcessTimes")
+	procQueryFullProcessImageNameW   = modKernel32.NewProc("QueryFullProcessImageNameW")
 )
 
 type cpuSample struct {
@@ -131,6 +132,18 @@ func queryProcess(pid, selfPID int32, numCPU int) *wire.ProcessInfo {
 		}
 	}
 
+	exePath := ""
+	var dosPath [windows.MAX_PATH]uint16
+	dosPathLen := uint32(windows.MAX_PATH)
+	ret2, _, _ := procQueryFullProcessImageNameW.Call(
+		handle, 0,
+		uintptr(unsafe.Pointer(&dosPath[0])),
+		uintptr(unsafe.Pointer(&dosPathLen)),
+	)
+	if ret2 != 0 && dosPathLen > 0 {
+		exePath = syscall.UTF16ToString(dosPath[:dosPathLen])
+	}
+
 	var memCounters PROCESS_MEMORY_COUNTERS
 	memCounters.CB = uint32(unsafe.Sizeof(memCounters))
 	memory := uint64(0)
@@ -224,6 +237,7 @@ func queryProcess(pid, selfPID int32, numCPU int) *wire.ProcessInfo {
 		PID:      pid,
 		PPID:     ppid,
 		Name:     name,
+		ExePath:  exePath,
 		CPU:      cpu,
 		Memory:   memory,
 		Username: username,

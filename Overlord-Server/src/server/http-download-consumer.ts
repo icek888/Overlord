@@ -2,6 +2,8 @@ import fs from "fs/promises";
 import type { FileHandle } from "fs/promises";
 import { logger } from "../logger";
 
+export const STREAM_REORDER_BUFFER_LIMIT = 16;
+
 export type PendingHttpDownload = {
   commandId: string;
   clientId: string;
@@ -20,7 +22,77 @@ export type PendingHttpDownload = {
   resolve: (entry: PendingHttpDownload) => void;
   reject: (error: Error) => void;
   timeout: ReturnType<typeof setTimeout>;
+  streamController?: ReadableStreamDefaultController<Uint8Array>;
+  reorderBuffer?: Map<number, Uint8Array>;
+  nextExpectedOffset?: number;
+  streamErrored?: boolean;
+  onFirstChunk?: () => void;
+  firstChunkSignaled?: boolean;
 };
+
+function isStreamMode(pending: PendingHttpDownload): boolean {
+  return !!pending.streamController;
+}
+
+async function failStream(pending: PendingHttpDownload, err: Error): Promise<void> {
+  if (pending.streamErrored) return;
+  pending.streamErrored = true;
+  try {
+    pending.streamController?.error(err);
+  } catch {}
+  pending.reorderBuffer?.clear();
+}
+
+function enqueueOrdered(pending: PendingHttpDownload, offset: number, data: Uint8Array): boolean {
+  if (!pending.streamController || pending.streamErrored) return false;
+  if (offset === (pending.nextExpectedOffset ?? 0)) {
+    try {
+      pending.streamController.enqueue(data);
+    } catch (err) {
+      void failStream(pending, err as Error);
+      return false;
+    }
+    pending.nextExpectedOffset = (pending.nextExpectedOffset ?? 0) + data.length;
+    if (pending.reorderBuffer && pending.reorderBuffer.size > 0) {
+      while (true) {
+        const next = pending.reorderBuffer.get(pending.nextExpectedOffset ?? 0);
+        if (!next) break;
+        pending.reorderBuffer.delete(pending.nextExpectedOffset ?? 0);
+        try {
+          pending.streamController.enqueue(next);
+        } catch (err) {
+          void failStream(pending, err as Error);
+          return false;
+        }
+        pending.nextExpectedOffset = (pending.nextExpectedOffset ?? 0) + next.length;
+      }
+    }
+    return true;
+  }
+  if (!pending.reorderBuffer) pending.reorderBuffer = new Map();
+  if (!pending.reorderBuffer.has(offset)) {
+    pending.reorderBuffer.set(offset, data);
+  }
+  if (pending.reorderBuffer.size > STREAM_REORDER_BUFFER_LIMIT) {
+    void failStream(pending, new Error("download chunks arrived too far out of order"));
+    return false;
+  }
+  return true;
+}
+
+async function teardownPending(pending: PendingHttpDownload, pendingHttpDownloads: Map<string, PendingHttpDownload>): Promise<void> {
+  clearTimeout(pending.timeout);
+  pendingHttpDownloads.delete(pending.commandId);
+  if (isStreamMode(pending)) {
+    return;
+  }
+  try {
+    await pending.fileHandle.close();
+  } catch {}
+  try {
+    await fs.unlink(pending.tmpPath);
+  } catch {}
+}
 
 export async function consumeHttpDownloadPayload(
   payload: any,
@@ -33,15 +105,16 @@ export async function consumeHttpDownloadPayload(
   if (!pending) return;
 
   if (payload?.error) {
-    clearTimeout(pending.timeout);
-    pendingHttpDownloads.delete(commandId);
-    try {
-      await pending.fileHandle.close();
-    } catch {}
-    try {
-      await fs.unlink(pending.tmpPath);
-    } catch {}
-    pending.reject(new Error(String(payload.error)));
+    const err = new Error(String(payload.error));
+    if (isStreamMode(pending)) {
+      await failStream(pending, err);
+      clearTimeout(pending.timeout);
+      pendingHttpDownloads.delete(commandId);
+      pending.resolve(pending);
+    } else {
+      await teardownPending(pending, pendingHttpDownloads);
+      pending.reject(err);
+    }
     return;
   }
 
@@ -67,6 +140,7 @@ export async function consumeHttpDownloadPayload(
       commandId,
       total: pending.total,
       rawTotalType: typeof rawTotal,
+      mode: isStreamMode(pending) ? "stream" : "buffer",
     });
   }
 
@@ -112,34 +186,44 @@ export async function consumeHttpDownloadPayload(
           chunkIndex,
           chunksTotal,
           expectedChunks: pending.expectedChunks,
+          mode: isStreamMode(pending) ? "stream" : "buffer",
         });
       }
 
+      const effectiveOffset = offset ?? 0;
       const shouldWrite = chunkIndex !== null
         ? !pending.receivedChunks.has(chunkIndex)
-        : !pending.receivedOffsets.has(offset ?? 0);
+        : !pending.receivedOffsets.has(effectiveOffset);
 
       if (shouldWrite) {
-        try {
-          await pending.fileHandle.write(data, 0, data.length, offset ?? 0);
-        } catch (err) {
-          clearTimeout(pending.timeout);
-          pendingHttpDownloads.delete(commandId);
+        if (isStreamMode(pending)) {
+          const accepted = enqueueOrdered(pending, effectiveOffset, data);
+          if (!accepted) {
+            clearTimeout(pending.timeout);
+            pendingHttpDownloads.delete(commandId);
+            pending.resolve(pending);
+            return;
+          }
+        } else {
           try {
-            await pending.fileHandle.close();
-          } catch {}
-          try {
-            await fs.unlink(pending.tmpPath);
-          } catch {}
-          pending.reject(err as Error);
-          return;
+            await pending.fileHandle.write(data, 0, data.length, effectiveOffset);
+          } catch (err) {
+            await teardownPending(pending, pendingHttpDownloads);
+            pending.reject(err as Error);
+            return;
+          }
         }
         if (chunkIndex !== null) {
           pending.receivedChunks.add(chunkIndex);
         } else {
-          pending.receivedOffsets.add(offset ?? 0);
+          pending.receivedOffsets.add(effectiveOffset);
         }
         pending.receivedBytes += data.length;
+
+        if (!pending.firstChunkSignaled && pending.onFirstChunk) {
+          pending.firstChunkSignaled = true;
+          try { pending.onFirstChunk(); } catch {}
+        }
       }
     }
   }
@@ -152,9 +236,17 @@ export async function consumeHttpDownloadPayload(
   if ((pending.total > 0 ? pending.receivedBytes >= pending.total : hasAllChunks && pending.receivedBytes > 0) && hasAllChunks) {
     clearTimeout(pending.timeout);
     pendingHttpDownloads.delete(commandId);
-    try {
-      await pending.fileHandle.close();
-    } catch {}
+    if (isStreamMode(pending)) {
+      if (pending.reorderBuffer && pending.reorderBuffer.size > 0 && !pending.streamErrored) {
+        await failStream(pending, new Error("download completed with gaps in chunk stream"));
+      } else if (!pending.streamErrored) {
+        try { pending.streamController?.close(); } catch {}
+      }
+    } else {
+      try {
+        await pending.fileHandle.close();
+      } catch {}
+    }
     pending.resolve(pending);
   }
 }

@@ -275,6 +275,12 @@ function handleMessage(msg) {
     case "file_dirsize_result":
       handleFileDirsizeResult(msg);
       break;
+    case "file_peek_result":
+      handleFilePeekResult(msg);
+      break;
+    case "file_hash_result":
+      handleFileHashResult(msg);
+      break;
     case "command_result":
       console.log("[DEBUG] Command result:", msg);
       handleCommandResult(msg);
@@ -1243,6 +1249,12 @@ function handleFileList(msg) {
     updateSidebarDrives([]);
   }
   highlightSidebarActive();
+  updatePinnedSidebar();
+
+  // If the previewed item was from another directory, clear it.
+  if (currentPreviewEntry && !directoryEntries.some((e) => e.path === currentPreviewEntry.path)) {
+    clearPreviewPane();
+  }
 
   selectedFiles.clear();
   updateSelectionUI();
@@ -1321,11 +1333,20 @@ function createFileRow(entry) {
   const size = entry.isDir ? "-" : formatBytes(entry.size);
   const modTime = new Date(entry.modTime * 1000).toLocaleString();
 
+  const pinnedNow = entry.isDir && isPinned(entry.path);
+  const pinTitle = pinnedNow ? "Unpin from sidebar" : "Pin to sidebar";
+  const pinIcon = pinnedNow ? "fa-star" : "fa-star";
+  const pinClass = pinnedNow ? "pin-star-btn pinned" : "pin-star-btn";
+  const pinBtn = entry.isDir
+    ? `<button class="${pinClass}" data-pin-toggle="${escapeHtml(entry.path)}" title="${pinTitle}" type="button"><i class="fa-solid ${pinIcon}"></i></button>`
+    : "";
+
   row.innerHTML = `
     <input type="checkbox" class="file-checkbox" data-path="${escapeHtml(entry.path)}">
     <div class="col-span-6 flex items-center gap-2 truncate pl-3">
       ${icon}
       <span class="truncate">${escapeHtml(entry.name)}</span>
+      ${pinBtn}
       ${badges}
     </div>
     <div class="col-span-2 text-sm text-slate-400 file-size-col">${size}</div>
@@ -1344,16 +1365,28 @@ function createFileRow(entry) {
   nameDiv.appendChild(mobileMetaDiv);
 
   row.onclick = (e) => {
-    if (e.target.closest(".file-checkbox") || e.target.closest(".action-btn")) {
+    if (e.target.closest(".file-checkbox") || e.target.closest(".action-btn") || e.target.closest(".pin-star-btn")) {
       return;
     }
 
+    // Single-click always updates the preview pane.
+    showPreviewForEntry(entry);
+
+    if (entry.isDir) {
+      listFiles(entry.path);
+    }
+  };
+
+  row.ondblclick = (e) => {
+    if (e.target.closest(".file-checkbox") || e.target.closest(".action-btn") || e.target.closest(".pin-star-btn")) {
+      return;
+    }
     if (entry.isDir) {
       listFiles(entry.path);
     } else if (isPreviewable(entry.name)) {
       openFilePreview(entry.path, entry.size);
     } else if (KNOWN_BINARY_EXTS.has(getFileExt(entry.name))) {
-      notifyToast("Binary file — use Download to save it", "info", 3000);
+      openHexViewer(entry.path);
     } else {
       openFileInEditor(entry.path);
     }
@@ -1382,6 +1415,23 @@ function createFileRow(entry) {
       handleFileAction(action, entry);
     };
   });
+
+  const pinToggleBtn = row.querySelector("[data-pin-toggle]");
+  if (pinToggleBtn) {
+    pinToggleBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const target = pinToggleBtn.dataset.pinToggle;
+      if (isPinned(target)) {
+        unpinPath(target);
+        pinToggleBtn.classList.remove("pinned");
+        pinToggleBtn.title = "Pin to sidebar";
+      } else {
+        pinPath(target, entry.name);
+        pinToggleBtn.classList.add("pinned");
+        pinToggleBtn.title = "Unpin from sidebar";
+      }
+    });
+  }
 
   row.oncontextmenu = (e) => {
     e.preventDefault();
@@ -1483,6 +1533,20 @@ function handleFileAction(action, entry) {
       break;
     case "dirsize":
       requestFolderSize(entry);
+      break;
+    case "pin":
+      pinPath(entry.path, entry.name);
+      notifyToast("Pinned", "success", 1800);
+      break;
+    case "unpin":
+      unpinPath(entry.path);
+      notifyToast("Unpinned", "info", 1800);
+      break;
+    case "hex_peek":
+      if (!entry.isDir) openHexViewer(entry.path);
+      break;
+    case "hash":
+      if (!entry.isDir) requestFileHash(entry.path, "context");
       break;
   }
 }
@@ -1595,41 +1659,104 @@ function downloadFile(path) {
         transfer.total = total;
       }
 
-      const chunks = [];
       let received = 0;
       let lastLoggedBytes = 0;
-      if (res.body) {
-        const reader = res.body.getReader();
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (value) {
-            chunks.push(value);
-            received += value.length;
-            transfer.received = received;
-            if (received - lastLoggedBytes >= 5 * 1024 * 1024) {
-              lastLoggedBytes = received;
-              console.debug("[filebrowser] download stream", {
-                path,
-                received,
-                total: transfer.total,
-              });
-            }
-            if (transfer.total > 0) {
-              transfer.progress = Math.round((received / transfer.total) * 100);
-              updateTransferProgress(transferId, transfer.progress, received, transfer.total);
-            }
-          }
-          if (transfer.cancelled) {
-            break;
-          }
-        }
-      } else {
-        console.warn("[filebrowser] download response missing body", { path });
-        const blob = await res.blob();
-        chunks.push(new Uint8Array(await blob.arrayBuffer()));
-        received = chunks[0]?.length || 0;
+      const trackChunk = (size) => {
+        received += size;
         transfer.received = received;
+        if (received - lastLoggedBytes >= 5 * 1024 * 1024) {
+          lastLoggedBytes = received;
+          console.debug("[filebrowser] download stream", {
+            path,
+            received,
+            total: transfer.total,
+          });
+        }
+        if (transfer.total > 0) {
+          transfer.progress = Math.round((received / transfer.total) * 100);
+          updateTransferProgress(transferId, transfer.progress, received, transfer.total);
+        }
+      };
+
+      const canStreamToDisk = typeof window.showSaveFilePicker === "function" && !!res.body;
+      let usedStreamToDisk = false;
+
+      if (canStreamToDisk) {
+        let saveHandle = null;
+        try {
+          saveHandle = await window.showSaveFilePicker({ suggestedName: fileName });
+        } catch (pickerErr) {
+          if (pickerErr && pickerErr.name === "AbortError") {
+            transfer.cancelled = true;
+            try { abortController.abort(); } catch {}
+            removeTransfer(transferId);
+            fileDownloads.delete(path);
+            updateStatus("connected", "Connected");
+            return;
+          }
+          console.warn("[filebrowser] save picker failed, falling back to blob", pickerErr);
+          saveHandle = null;
+        }
+        if (saveHandle) {
+          const writable = await saveHandle.createWritable();
+          const progressTransform = new TransformStream({
+            transform(chunk, controller) {
+              trackChunk(chunk.byteLength);
+              controller.enqueue(chunk);
+            },
+          });
+          try {
+            await res.body.pipeThrough(progressTransform).pipeTo(writable, {
+              signal: abortController.signal,
+            });
+          } catch (pipeErr) {
+            try { await writable.abort(pipeErr); } catch {}
+            throw pipeErr;
+          }
+          usedStreamToDisk = true;
+        }
+      }
+
+      if (!usedStreamToDisk) {
+        const chunks = [];
+        if (res.body) {
+          const reader = res.body.getReader();
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (value) {
+              chunks.push(value);
+              trackChunk(value.length);
+            }
+            if (transfer.cancelled) {
+              try { await reader.cancel(); } catch {}
+              break;
+            }
+          }
+        } else {
+          console.warn("[filebrowser] download response missing body", { path });
+          const blob = await res.blob();
+          const buf = new Uint8Array(await blob.arrayBuffer());
+          chunks.push(buf);
+          trackChunk(buf.length);
+        }
+
+        if (transfer.cancelled) {
+          removeTransfer(transferId);
+          fileDownloads.delete(path);
+          updateStatus("connected", "Connected");
+          return;
+        }
+
+        const blob = new Blob(chunks);
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
       }
 
       if (transfer.cancelled) {
@@ -1644,22 +1771,12 @@ function downloadFile(path) {
         updateTransferProgress(transferId, transfer.progress, received, transfer.total);
       }
 
-      const blob = new Blob(chunks);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = fileName;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-
       console.log("Download complete:", path, `${received} bytes`);
       console.debug("[filebrowser] download complete", {
         path,
         received,
         total: transfer.total,
-        chunks: chunks.length,
+        streamedToDisk: usedStreamToDisk,
       });
       removeTransfer(transferId);
       fileDownloads.delete(path);
@@ -2058,7 +2175,7 @@ function handleFileUploadResult(msg) {
 
     if (Number.isFinite(msg.received)) {
       transfer.receivedBytes = Math.min(Number(msg.received), transfer.total);
-      transfer.sent = transfer.receivedBytes;
+      transfer.sent = Math.max(transfer.sent || 0, transfer.receivedBytes);
     }
 
     if (transfer.total > 0) {
@@ -2164,6 +2281,10 @@ function showContextMenu(x, y, entry) {
   const executeItem = contextMenu.querySelector('[data-action="execute"]');
   const silentExecuteItem = contextMenu.querySelector('[data-action="silent_execute"]');
   const dirsizeItem = contextMenu.querySelector('[data-action="dirsize"]');
+  const pinItem = contextMenu.querySelector('[data-action="pin"]');
+  const unpinItem = contextMenu.querySelector('[data-action="unpin"]');
+  const hexItem = contextMenu.querySelector('[data-action="hex_peek"]');
+  const hashItem = contextMenu.querySelector('[data-action="hash"]');
 
   if (editItem) editItem.style.display = entry.isDir ? "none" : "block";
   if (zipItem) zipItem.style.display = entry.isDir ? "block" : "none";
@@ -2171,6 +2292,12 @@ function showContextMenu(x, y, entry) {
   if (executeItem) executeItem.style.display = entry.isDir ? "none" : "block";
   if (silentExecuteItem) silentExecuteItem.style.display = entry.isDir ? "none" : "block";
   if (dirsizeItem) dirsizeItem.style.display = entry.isDir ? "block" : "none";
+
+  const pinned = isPinned(entry.path);
+  if (pinItem) pinItem.style.display = pinned ? "none" : "block";
+  if (unpinItem) unpinItem.style.display = pinned ? "block" : "none";
+  if (hexItem) hexItem.style.display = entry.isDir ? "none" : "block";
+  if (hashItem) hashItem.style.display = entry.isDir ? "none" : "block";
 }
 
 function hideContextMenu() {
@@ -2229,17 +2356,50 @@ function hasFileDrag(event) {
   return types.includes("Files");
 }
 
+let dropOverlayEl = null;
+
+function ensureDropOverlay() {
+  if (dropOverlayEl || !fileListPanel) return dropOverlayEl;
+  if (!fileListPanel.classList.contains("relative")) {
+    fileListPanel.classList.add("relative");
+  }
+  const overlay = document.createElement("div");
+  overlay.id = "file-drop-overlay";
+  overlay.className =
+    "hidden absolute inset-0 z-30 pointer-events-none flex items-center justify-center bg-blue-500/15 border-2 border-dashed border-blue-400 rounded-lg backdrop-blur-sm";
+  overlay.innerHTML = `
+    <div class="text-center px-6">
+      <i class="fa-solid fa-cloud-arrow-up text-5xl text-blue-300 mb-3"></i>
+      <div class="text-base font-semibold text-blue-100 drop-target-label">Drop files to upload</div>
+      <div class="text-xs text-blue-200/80 mt-1 drop-target-path"></div>
+    </div>
+  `;
+  fileListPanel.appendChild(overlay);
+  dropOverlayEl = overlay;
+  return overlay;
+}
+
 function setDropTargetActive(active) {
   if (!fileListPanel) return;
+  const overlay = ensureDropOverlay();
+  if (overlay) {
+    overlay.classList.toggle("hidden", !active);
+    if (active) {
+      const pathEl = overlay.querySelector(".drop-target-path");
+      if (pathEl) {
+        pathEl.textContent = currentPath ? `into ${currentPath}` : "";
+      }
+    }
+  }
   fileListPanel.classList.toggle("ring-2", active);
   fileListPanel.classList.toggle("ring-blue-500", active);
   fileListPanel.classList.toggle("ring-offset-2", active);
   fileListPanel.classList.toggle("ring-offset-slate-950", active);
-  fileListPanel.classList.toggle("bg-blue-500/5", active);
 }
 
 function setupDragAndDropUpload() {
   if (!fileListPanel) return;
+  ensureDropOverlay();
 
   fileListPanel.addEventListener("dragenter", (e) => {
     if (!hasFileDrag(e)) return;
@@ -2429,20 +2589,28 @@ async function uploadFileViaHttpPull(file, path, transfer) {
   console.debug("[filebrowser] upload staged", {
     pullUrl: uploadData.pullUrl,
     size: uploadData.size,
+    agentNotified: !!uploadData.agentNotified,
   });
 
-  const commandId = `upload-http-${Date.now()}-${Math.random()}`;
-  const waitResult = waitForCommandResult(commandId, 12 * 60 * 1000);
-  send({
-    type: "command",
-    commandType: "file_upload_http",
-    id: commandId,
-    payload: {
-      path,
-      url: uploadData.pullUrl,
-      total: file.size,
-    },
-  });
+  let commandId;
+  let waitResult;
+  if (uploadData.agentNotified && typeof uploadData.agentCommandId === "string") {
+    commandId = uploadData.agentCommandId;
+    waitResult = waitForCommandResult(commandId, 12 * 60 * 1000);
+  } else {
+    commandId = `upload-http-${Date.now()}-${Math.random()}`;
+    waitResult = waitForCommandResult(commandId, 12 * 60 * 1000);
+    send({
+      type: "command",
+      commandType: "file_upload_http",
+      id: commandId,
+      payload: {
+        path,
+        url: uploadData.pullUrl,
+        total: file.size,
+      },
+    });
+  }
 
   await waitResult;
 
@@ -2457,6 +2625,80 @@ async function uploadFileViaHttpPull(file, path, transfer) {
   transfer.receivedChunks = transfer.expectedChunks;
   updateTransferProgress(transfer.id, transfer.progress, transfer.sent, transfer.total);
   transfer.uploadXhr = null;
+}
+
+const WS_UPLOAD_MAX_TOTAL = 8 * 1024 * 1024;
+const WS_UPLOAD_CHUNK_SIZE = 512 * 1024;
+const WS_UPLOAD_CONCURRENCY = 4;
+const WS_UPLOAD_ACK_TIMEOUT_MS = 90 * 1000;
+
+async function uploadFileViaWsChunks(file, path, transfer) {
+  const total = file.size;
+  transfer.total = total;
+
+  const pumpChunk = (offset, data) => {
+    const ackPromise = new Promise((resolve, reject) => {
+      const timeoutId = setTimeout(() => {
+        transfer.pendingAcks.delete(offset);
+        reject(new Error(`upload chunk timeout (offset ${offset})`));
+      }, WS_UPLOAD_ACK_TIMEOUT_MS);
+      transfer.pendingAcks.set(offset, { resolve, reject, timeoutId });
+    });
+    send({
+      type: "file_upload",
+      path,
+      data,
+      offset,
+      total,
+      transferId: transfer.transferId,
+    });
+    transfer.sent = Math.min((transfer.sent || 0) + data.length, total);
+    if (total > 0) {
+      transfer.progress = Math.round((transfer.sent / total) * 100);
+      updateTransferProgress(transfer.id, transfer.progress, transfer.sent, total);
+    }
+    return ackPromise;
+  };
+
+  if (total === 0) {
+    transfer.expectedChunks = 1;
+    await pumpChunk(0, new Uint8Array(0));
+    transfer.completed = true;
+    transfer.progress = 100;
+    updateTransferProgress(transfer.id, 100, 0, 0);
+    return;
+  }
+
+  const expectedChunks = Math.ceil(total / WS_UPLOAD_CHUNK_SIZE);
+  transfer.expectedChunks = expectedChunks;
+
+  const inFlight = new Map();
+  let nextOffset = 0;
+
+  try {
+    while (nextOffset < total || inFlight.size > 0) {
+      while (inFlight.size < WS_UPLOAD_CONCURRENCY && nextOffset < total) {
+        if (transfer.cancelled) throw new Error("Upload cancelled");
+        const start = nextOffset;
+        const end = Math.min(start + WS_UPLOAD_CHUNK_SIZE, total);
+        const buf = new Uint8Array(await file.slice(start, end).arrayBuffer());
+        nextOffset = end;
+        const tracked = pumpChunk(start, buf).then(() => inFlight.delete(start));
+        inFlight.set(start, tracked);
+      }
+      if (inFlight.size > 0) {
+        await Promise.race(inFlight.values());
+      }
+    }
+    transfer.completed = true;
+  } catch (err) {
+    transfer.pendingAcks.forEach((pending) => {
+      clearTimeout(pending.timeoutId);
+      try { pending.reject(err); } catch {}
+    });
+    transfer.pendingAcks.clear();
+    throw err;
+  }
 }
 
 async function uploadFile(file) {
@@ -2490,8 +2732,14 @@ async function uploadFile(file) {
   activeTransfers.set(transferId, transfer);
   addTransferToUI(transfer);
 
+  const useWs = file.size <= WS_UPLOAD_MAX_TOTAL;
+
   try {
-    await uploadFileViaHttpPull(file, path, transfer);
+    if (useWs) {
+      await uploadFileViaWsChunks(file, path, transfer);
+    } else {
+      await uploadFileViaHttpPull(file, path, transfer);
+    }
     finishUpload(transfer);
   } catch (err) {
     console.error("Upload error:", err);
@@ -2547,6 +2795,448 @@ document.addEventListener("click", (e) => {
 setupDragAndDropUpload();
 updateStatus("connecting", "Connecting...");
 updateBackButton();
+
+// ── Pinned paths (operator-scoped, localStorage) ────────────────────────────
+const PINNED_STORAGE_KEY = "filebrowser.pinnedPaths.v1";
+const sidebarPinned = document.getElementById("sidebar-pinned");
+const sidebarPinCurrentBtn = document.getElementById("sidebar-pin-current-btn");
+
+function loadPinnedPaths() {
+  try {
+    const raw = localStorage.getItem(PINNED_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((p) => p && typeof p.path === "string");
+  } catch {
+    return [];
+  }
+}
+
+function savePinnedPaths(list) {
+  try {
+    localStorage.setItem(PINNED_STORAGE_KEY, JSON.stringify(list));
+  } catch (err) {
+    console.warn("Failed to persist pinned paths:", err);
+  }
+}
+
+function isPinned(path) {
+  return loadPinnedPaths().some((p) => p.path === path);
+}
+
+function pinPath(path, name) {
+  if (!path) return;
+  const list = loadPinnedPaths();
+  if (list.some((p) => p.path === path)) return;
+  const fallback = path.split(/[\/\\]/).filter(Boolean).pop() || path;
+  list.push({ path, name: name || fallback, addedAt: Date.now() });
+  savePinnedPaths(list);
+  updatePinnedSidebar();
+}
+
+function unpinPath(path) {
+  if (!path) return;
+  const list = loadPinnedPaths().filter((p) => p.path !== path);
+  savePinnedPaths(list);
+  updatePinnedSidebar();
+}
+
+function updatePinnedSidebar() {
+  if (!sidebarPinned) return;
+  const list = loadPinnedPaths();
+  if (list.length === 0) {
+    sidebarPinned.innerHTML =
+      '<div class="text-xs text-slate-500 text-center py-3">No pinned paths.<br><span class="text-slate-600">Right-click any folder.</span></div>';
+    return;
+  }
+  let html = "";
+  list.forEach((p) => {
+    const active = currentPath && (currentPath === p.path || currentPath.startsWith(p.path + "/") || currentPath.startsWith(p.path + "\\"));
+    html += `
+      <div class="sidebar-item w-full flex items-center gap-2 px-3 py-1.5 rounded-md text-sm text-slate-300 hover:text-white transition-colors text-left${active ? " active" : ""}" data-path="${escapeHtml(p.path)}">
+        <i class="fa-solid fa-star text-yellow-400 w-3 text-center text-[10px]"></i>
+        <span class="truncate flex-1" title="${escapeHtml(p.path)}">${escapeHtml(p.name)}</span>
+        <button class="text-[10px] text-slate-600 hover:text-red-400 pin-remove-btn" title="Unpin" data-path="${escapeHtml(p.path)}" type="button">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>`;
+  });
+  sidebarPinned.innerHTML = html;
+  sidebarPinned.querySelectorAll(".sidebar-item").forEach((row) => {
+    row.addEventListener("click", (e) => {
+      if (e.target.closest(".pin-remove-btn")) return;
+      listFiles(row.dataset.path);
+    });
+  });
+  sidebarPinned.querySelectorAll(".pin-remove-btn").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      unpinPath(btn.dataset.path);
+    });
+  });
+}
+
+if (sidebarPinCurrentBtn) {
+  sidebarPinCurrentBtn.addEventListener("click", () => {
+    if (!currentPath || currentPath === ".") {
+      notifyToast("Navigate into a folder first", "info", 2500);
+      return;
+    }
+    if (isPinned(currentPath)) {
+      unpinPath(currentPath);
+      notifyToast("Unpinned", "info", 1800);
+    } else {
+      pinPath(currentPath);
+      notifyToast("Pinned", "success", 1800);
+    }
+  });
+}
+
+// ── Preview pane ────────────────────────────────────────────────────────────
+const PREVIEW_PANE_STATE_KEY = "filebrowser.previewPaneVisible.v1";
+const previewPaneHost = document.getElementById("preview-pane-host");
+const previewPaneEl = document.getElementById("preview-pane");
+const previewPaneToggle = document.getElementById("preview-pane-toggle");
+const previewPaneShowBtnHost = document.getElementById("preview-pane-show-btn-host");
+const previewPaneShowBtn = document.getElementById("preview-pane-show-btn");
+const previewActiveEl = document.getElementById("preview-active");
+const previewEmptyEl = previewPaneEl?.querySelector(".preview-empty");
+const previewThumbBox = document.getElementById("preview-thumb-box");
+const previewNameEl = document.getElementById("preview-name");
+const previewPathEl = document.getElementById("preview-path");
+const previewMetaList = document.getElementById("preview-meta-list");
+const previewTextHeadHost = document.getElementById("preview-text-head-host");
+const previewTextHead = document.getElementById("preview-text-head");
+const previewHexBtn = document.getElementById("preview-hex-btn");
+const previewHashBtn = document.getElementById("preview-hash-btn");
+const previewHashResult = document.getElementById("preview-hash-result");
+const previewHashValue = document.getElementById("preview-hash-value");
+const previewHashKnown = document.getElementById("preview-hash-known");
+
+let currentPreviewEntry = null;
+let lastPeekCommandId = null;
+let lastHashCommandId = null;
+
+function setPreviewPaneVisible(visible) {
+  if (!previewPaneHost) return;
+  if (visible) {
+    previewPaneHost.classList.remove("hidden");
+    previewPaneShowBtnHost?.classList.add("hidden");
+  } else {
+    previewPaneHost.classList.add("hidden");
+    previewPaneShowBtnHost?.classList.remove("hidden");
+  }
+  try { localStorage.setItem(PREVIEW_PANE_STATE_KEY, visible ? "1" : "0"); } catch {}
+}
+
+previewPaneToggle?.addEventListener("click", () => setPreviewPaneVisible(false));
+previewPaneShowBtn?.addEventListener("click", () => setPreviewPaneVisible(true));
+(function initPreviewPaneVisibility() {
+  let saved = "1";
+  try { saved = localStorage.getItem(PREVIEW_PANE_STATE_KEY) || "1"; } catch {}
+  setPreviewPaneVisible(saved !== "0");
+})();
+
+function clearPreviewPane() {
+  currentPreviewEntry = null;
+  if (!previewPaneEl) return;
+  previewPaneEl.classList.add("empty");
+  previewActiveEl?.classList.add("hidden");
+  if (previewThumbBox) previewThumbBox.innerHTML = "";
+  if (previewMetaList) previewMetaList.innerHTML = "";
+  if (previewTextHead) previewTextHead.textContent = "";
+  previewTextHeadHost?.classList.add("hidden");
+  previewHashResult?.classList.add("hidden");
+}
+
+function renderPreviewMeta(entry) {
+  if (!previewMetaList) return "";
+  const ext = getFileExt(entry.name);
+  const fields = [];
+  fields.push(["Type", entry.isDir ? "Folder" : (ext ? ext.toUpperCase() : "File")]);
+  if (!entry.isDir) fields.push(["Size", formatBytes(entry.size)]);
+  fields.push(["Modified", new Date(entry.modTime * 1000).toLocaleString()]);
+  if (entry.mode) fields.push(["Mode", entry.mode]);
+  if (entry.owner) fields.push(["Owner", entry.owner]);
+  previewMetaList.innerHTML = fields.map(([k, v]) =>
+    `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(String(v))}</dd>`
+  ).join("");
+}
+
+function showPreviewForEntry(entry) {
+  if (!entry || !previewPaneEl || previewPaneHost?.classList.contains("hidden")) return;
+  currentPreviewEntry = entry;
+  previewPaneEl.classList.remove("empty");
+  previewActiveEl?.classList.remove("hidden");
+  if (previewNameEl) previewNameEl.textContent = entry.name || "";
+  if (previewPathEl) previewPathEl.textContent = entry.path || "";
+  renderPreviewMeta(entry);
+
+  // Thumbnail / icon
+  if (previewThumbBox) {
+    previewThumbBox.innerHTML = "";
+    const tKey = thumbCacheKey(entry);
+    const cached = tKey ? thumbCache.get(tKey) : null;
+    if (cached && cached.blobUrl) {
+      const img = document.createElement("img");
+      img.src = cached.blobUrl;
+      previewThumbBox.appendChild(img);
+    } else {
+      const iconKey = iconCacheKey(entry);
+      const iconEntry = iconKey ? iconCache.get(iconKey) : null;
+      if (iconEntry && iconEntry.blobUrl) {
+        const img = document.createElement("img");
+        img.src = iconEntry.blobUrl;
+        img.style.width = "64px";
+        img.style.height = "64px";
+        previewThumbBox.appendChild(img);
+      } else {
+        previewThumbBox.innerHTML = `<div class="text-4xl text-slate-500">${getFileIcon(entry)}</div>`;
+      }
+      if (tKey) requestThumbFor(entry);
+    }
+  }
+
+  // Text head — only for likely-text files under 4KB peek window
+  previewTextHeadHost?.classList.add("hidden");
+  if (previewTextHead) previewTextHead.textContent = "";
+  if (!entry.isDir) {
+    const ext = getFileExt(entry.name);
+    if (!KNOWN_BINARY_EXTS.has(ext) && !PREVIEW_IMAGE_EXTS.has(ext) && !PREVIEW_PDF_EXTS.has(ext)) {
+      requestFilePeek(entry.path, "preview");
+    }
+  }
+
+  previewHashResult?.classList.add("hidden");
+  if (previewHashValue) previewHashValue.textContent = "";
+  if (previewHashKnown) {
+    previewHashKnown.classList.add("hidden");
+    previewHashKnown.textContent = "";
+  }
+}
+
+// ── file_peek (hex viewer + text head) ──────────────────────────────────────
+const hexViewerModal = document.getElementById("hex-viewer-modal");
+const hexViewerFile = document.getElementById("hex-viewer-file");
+const hexViewerBody = document.getElementById("hex-viewer-body");
+const hexViewerInfo = document.getElementById("hex-viewer-info");
+const hexViewerCloseBtn = document.getElementById("hex-viewer-close-btn");
+const hexViewerCopyBtn = document.getElementById("hex-viewer-copy-btn");
+
+// commandId -> { kind: 'preview'|'hex', path, fileName }
+const peekRequests = new Map();
+let lastHexBytes = null;
+let lastHexFileName = "";
+
+function requestFilePeek(path, kind) {
+  const commandId = `peek-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const fileName = path.split(/[\/\\]/).pop() || "";
+  peekRequests.set(commandId, { kind, path, fileName });
+  lastPeekCommandId = commandId;
+  send({
+    type: "command",
+    commandType: "file_peek",
+    id: commandId,
+    payload: { path, bytes: 4096 },
+  });
+}
+
+function openHexViewer(path) {
+  if (!hexViewerModal) return;
+  const fileName = path.split(/[\/\\]/).pop() || "";
+  if (hexViewerFile) hexViewerFile.textContent = fileName;
+  if (hexViewerBody) hexViewerBody.innerHTML = '<div class="text-slate-400"><i class="fa-solid fa-circle-notch fa-spin mr-2"></i>Loading...</div>';
+  if (hexViewerInfo) hexViewerInfo.textContent = "";
+  hexViewerModal.classList.add("show");
+  requestFilePeek(path, "hex");
+}
+
+function closeHexViewer() {
+  hexViewerModal?.classList.remove("show");
+}
+
+function decodeTextHead(bytes) {
+  // Try UTF-8 first; fall back to latin1.
+  try {
+    return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+  } catch {
+    return new TextDecoder("latin1").decode(bytes);
+  }
+}
+
+function renderHexDump(bytes, totalSize) {
+  if (!hexViewerBody) return;
+  const len = bytes.length;
+  const rows = [];
+  for (let off = 0; off < len; off += 16) {
+    const chunk = bytes.slice(off, Math.min(off + 16, len));
+    const hexParts = [];
+    const asciiParts = [];
+    for (let i = 0; i < 16; i++) {
+      if (i < chunk.length) {
+        hexParts.push(chunk[i].toString(16).padStart(2, "0"));
+        const b = chunk[i];
+        if (b >= 0x20 && b <= 0x7e) {
+          asciiParts.push(`<span>${escapeHtml(String.fromCharCode(b))}</span>`);
+        } else {
+          asciiParts.push('<span class="np">.</span>');
+        }
+      } else {
+        hexParts.push("  ");
+        asciiParts.push(" ");
+      }
+      if (i === 7) hexParts.push("");
+    }
+    rows.push(
+      `<div class="hex-row">` +
+        `<span class="hex-off">${off.toString(16).padStart(8, "0")}</span>` +
+        `<span class="hex-bytes">${hexParts.join(" ")}</span>` +
+        `<span class="hex-ascii">${asciiParts.join("")}</span>` +
+      `</div>`
+    );
+  }
+  hexViewerBody.innerHTML = rows.join("");
+  if (hexViewerInfo) {
+    const peekStr = `${formatBytes(len)} peek`;
+    const totalStr = totalSize > 0 ? ` of ${formatBytes(totalSize)}` : "";
+    hexViewerInfo.textContent = peekStr + totalStr;
+  }
+  lastHexBytes = bytes;
+}
+
+function handleFilePeekResult(msg) {
+  const req = msg.commandId ? peekRequests.get(msg.commandId) : null;
+  if (!req) return;
+  peekRequests.delete(msg.commandId);
+
+  if (msg.error) {
+    if (req.kind === "hex") {
+      if (hexViewerBody) hexViewerBody.innerHTML = `<div class="text-red-400 p-3"><i class="fa-solid fa-exclamation-triangle mr-2"></i>${escapeHtml(msg.error)}</div>`;
+    }
+    if (req.kind === "preview" && currentPreviewEntry && currentPreviewEntry.path === req.path) {
+      previewTextHeadHost?.classList.add("hidden");
+    }
+    return;
+  }
+
+  let data = msg.data;
+  if (!data) data = new Uint8Array(0);
+  if (!(data instanceof Uint8Array)) {
+    try { data = new Uint8Array(data); } catch { data = new Uint8Array(0); }
+  }
+
+  if (req.kind === "hex") {
+    lastHexFileName = req.fileName;
+    renderHexDump(data, Number(msg.size || 0));
+    return;
+  }
+
+  // preview kind
+  if (!currentPreviewEntry || currentPreviewEntry.path !== req.path) return;
+  if (!msg.isText || data.length === 0) {
+    previewTextHeadHost?.classList.add("hidden");
+    return;
+  }
+  const text = decodeTextHead(data);
+  if (previewTextHead) previewTextHead.textContent = text;
+  previewTextHeadHost?.classList.remove("hidden");
+}
+
+hexViewerCloseBtn?.addEventListener("click", closeHexViewer);
+hexViewerModal?.addEventListener("click", (e) => {
+  if (e.target === hexViewerModal) closeHexViewer();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && hexViewerModal?.classList.contains("show")) {
+    closeHexViewer();
+  }
+});
+hexViewerCopyBtn?.addEventListener("click", async () => {
+  if (!lastHexBytes) return;
+  const hex = Array.from(lastHexBytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+  try {
+    await navigator.clipboard.writeText(hex);
+    notifyToast("Hex copied to clipboard", "success", 2000);
+  } catch {
+    notifyToast("Clipboard copy failed", "error", 2500);
+  }
+});
+
+// ── file_hash + tiny known catalog ──────────────────────────────────────────
+// SHA-256 hex digests for a few well-known files (operator tip). Lowercase.
+const KNOWN_HASHES_SHA256 = {
+  // empty file
+  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855": "Empty file (0 bytes)",
+  // example placeholders — populate over time
+};
+
+// commandId -> { path, fileName, source: 'preview'|'context' }
+const hashRequests = new Map();
+
+function requestFileHash(path, source) {
+  const commandId = `hash-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const fileName = path.split(/[\/\\]/).pop() || "";
+  hashRequests.set(commandId, { path, fileName, source });
+  lastHashCommandId = commandId;
+  send({
+    type: "command",
+    commandType: "file_hash",
+    id: commandId,
+    payload: { path, algorithm: "sha256" },
+  });
+  notifyToast(`Hashing ${fileName}…`, "info", 2500);
+}
+
+function handleFileHashResult(msg) {
+  const req = msg.commandId ? hashRequests.get(msg.commandId) : null;
+  if (!req) return;
+  hashRequests.delete(msg.commandId);
+
+  if (msg.error) {
+    notifyToast(`Hash failed: ${msg.error}`, "error", 5000);
+    return;
+  }
+  const digest = (msg.digest || "").toLowerCase();
+  const known = KNOWN_HASHES_SHA256[digest];
+
+  // Update preview pane if it's showing this file
+  if (currentPreviewEntry && currentPreviewEntry.path === req.path && previewHashValue) {
+    previewHashValue.textContent = digest;
+    previewHashResult?.classList.remove("hidden");
+    if (previewHashKnown) {
+      if (known) {
+        previewHashKnown.textContent = `Known: ${known}`;
+        previewHashKnown.classList.remove("hidden");
+      } else {
+        previewHashKnown.classList.add("hidden");
+      }
+    }
+  }
+
+  const msgSuffix = known ? ` — matches known: ${known}` : "";
+  notifyToast(`SHA-256: ${digest.slice(0, 16)}…${msgSuffix}`, "success", 6000);
+  navigator.clipboard?.writeText(digest).catch(() => {});
+}
+
+previewHexBtn?.addEventListener("click", () => {
+  if (currentPreviewEntry && !currentPreviewEntry.isDir) {
+    openHexViewer(currentPreviewEntry.path);
+  }
+});
+previewHashBtn?.addEventListener("click", () => {
+  if (currentPreviewEntry && !currentPreviewEntry.isDir) {
+    requestFileHash(currentPreviewEntry.path, "preview");
+  }
+});
+previewHashValue?.addEventListener("click", async () => {
+  const v = previewHashValue.textContent || "";
+  if (!v) return;
+  try {
+    await navigator.clipboard.writeText(v);
+    notifyToast("SHA-256 copied", "success", 1500);
+  } catch {}
+});
 
 // ── Sidebar Quick Access ──
 let detectedHomePath = "";
@@ -2631,6 +3321,36 @@ function updateSidebar() {
   bindSidebarClicks(sidebarContent);
 }
 
+function driveItemHtml(e) {
+  const label = e.name.match(/^[A-Za-z]:$/) ? e.name + "\\" : (e.name || e.path);
+  const path = e.name.match(/^[A-Za-z]:$/) ? e.name + "\\" : e.path;
+  const total = Number(e.totalBytes || 0);
+  const free = Number(e.freeBytes || 0);
+  let usageHtml = "";
+  let titleAttr = "";
+  if (total > 0) {
+    const used = Math.max(0, total - free);
+    const pct = Math.min(100, Math.round((used / total) * 100));
+    const cls = pct >= 90 ? "crit" : pct >= 75 ? "warn" : "";
+    usageHtml = `
+      <div class="drive-usage-bar"><div class="drive-usage-fill ${cls}" style="width:${pct}%"></div></div>
+      <div class="flex justify-between text-[10px] text-slate-500 mt-0.5">
+        <span>${formatBytes(free)} free</span>
+        <span>${formatBytes(total)}</span>
+      </div>`;
+    titleAttr = ` title="${escapeHtml(e.fsType || "")}${e.fsType ? " · " : ""}${formatBytes(free)} free of ${formatBytes(total)}"`;
+  }
+  return `
+    <div class="sidebar-item w-full flex flex-col gap-0 px-3 py-1.5 rounded-md text-sm text-slate-300 hover:text-white transition-colors text-left" data-path="${escapeHtml(path)}"${titleAttr}>
+      <div class="flex items-center gap-2 min-w-0">
+        <i class="fa-solid fa-hard-drive text-slate-400 w-4 text-center text-xs"></i>
+        <span class="truncate flex-1">${escapeHtml(label)}</span>
+        ${e.fsType ? `<span class="text-[9px] text-slate-500 uppercase">${escapeHtml(e.fsType)}</span>` : ""}
+      </div>
+      ${usageHtml}
+    </div>`;
+}
+
 function updateSidebarDrives(entries) {
   if (!sidebarDrives) return;
   if (!entries || entries.length === 0) {
@@ -2645,7 +3365,7 @@ function updateSidebarDrives(entries) {
   let html = "";
   entries.forEach((e) => {
     if (e.isDir && e.name.match(/^[A-Za-z]:$/)) {
-      html += sidebarItem("fa-hard-drive", e.name + "\\", e.name + "\\", "text-slate-300");
+      html += driveItemHtml(e);
     }
   });
   if (!html) {
@@ -2669,6 +3389,7 @@ function highlightSidebarActive() {
   });
 }
 
+updatePinnedSidebar();
 checkFeatureAccess("file_browser", clientId).then(ok => ok && connect());
 
 function addTransferToUI(transfer) {

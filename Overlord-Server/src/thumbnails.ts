@@ -36,6 +36,7 @@ type ThumbnailRecord = {
 const thumbnails = new Map<string, ThumbnailRecord>();
 const latestFrames = new Map<string, { bytes: Uint8Array; format: string; capturedAt: number }>();
 const thumbnailRequests = new Map<string, number>();
+const thumbnailVersionHWM = new Map<string, number>();
 
 function touchThumbnailLRU(id: string) {
   const existing = thumbnails.get(id);
@@ -120,11 +121,14 @@ export async function generateThumbnail(id: string): Promise<boolean> {
     }
     const prior = thumbnails.get(id);
     const now = Date.now();
+    const hwm = thumbnailVersionHWM.get(id) ?? (prior?.version ?? 0);
+    const newVersion = hwm + 1;
+    thumbnailVersionHWM.set(id, newVersion);
     if (prior) thumbnails.delete(id);
     thumbnails.set(id, {
       bytes: out,
       contentType: "image/webp",
-      version: (prior?.version ?? 0) + 1,
+      version: newVersion,
       updatedAt: now,
     });
     evictThumbnailsIfFull();

@@ -52,11 +52,14 @@ function buildThumbnailUrl(clientId, version) {
 export function applyImageSrcSmooth(img, url) {
   if (!img || !url) return;
   if (img.dataset.thumbUrl === url) return;
+  img.dataset.thumbUrl = url;
+  const gen = (img._thumbGen = ((img._thumbGen || 0) + 1));
   const newImg = img.cloneNode(false);
   newImg.dataset.thumbUrl = url;
   newImg.style.display = "block";
   const swap = () => {
-    if (img.parentNode && img.dataset.thumbUrl !== url) img.replaceWith(newImg);
+    if (img._thumbGen !== gen) return;
+    if (img.parentNode) img.replaceWith(newImg);
   };
   newImg.addEventListener("error", () => {}, { once: true });
   newImg.src = url;
@@ -103,7 +106,7 @@ export class ThumbnailLoader {
     if (!element || !clientId) return;
     const prior = this.records.get(element);
     if (prior && prior.clientId === clientId) {
-      prior.version = initialVersion || prior.version;
+      prior.version = Math.max(initialVersion, prior.version);
       this.applyVersion(element, prior);
       return;
     }
@@ -164,8 +167,7 @@ export class ThumbnailLoader {
     if (!element || !rec) return;
     const img = element.querySelector("img[data-thumb-img]");
     if (!img) return;
-    const url = buildThumbnailUrl(rec.clientId, rec.version);
-    applyImageSrcSmooth(img, url);
+    applyImageSrcSmooth(img, buildThumbnailUrl(rec.clientId, rec.version));
   }
 
   handleIntersection(entries) {

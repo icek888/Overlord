@@ -5,9 +5,15 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/md5"
+	"crypto/sha1"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"fmt"
+	"hash"
+	"hash/crc32"
 	"io"
 	"log"
 	"net/http"
@@ -25,7 +31,7 @@ import (
 	"overlord-client/cmd/agent/wire"
 )
 
-const maxChunkSize = 1024 * 1024
+const maxChunkSize = 4 * 1024 * 1024
 
 type pendingUpload struct {
 	file            *os.File
@@ -134,14 +140,19 @@ func listWindowsDrives(ctx context.Context, env *agentRuntime.Env, cmdID string)
 	for drive := 'A'; drive <= 'Z'; drive++ {
 		drivePath := string(drive) + ":\\"
 		if _, err := os.Stat(drivePath); err == nil {
-
-			entries = append(entries, wire.FileEntry{
+			entry := wire.FileEntry{
 				Name:    string(drive) + ":",
 				Path:    drivePath,
 				IsDir:   true,
 				Size:    0,
 				ModTime: time.Now().Unix(),
-			})
+			}
+			if free, total, fs, ok := DiskUsage(drivePath); ok {
+				entry.FreeBytes = free
+				entry.TotalBytes = total
+				entry.FSType = fs
+			}
+			entries = append(entries, entry)
 		}
 	}
 
@@ -154,6 +165,165 @@ func listWindowsDrives(ctx context.Context, env *agentRuntime.Env, cmdID string)
 	}
 
 	return wire.WriteMsg(ctx, env.Conn, result)
+}
+
+const filePeekMaxBytes = 4096
+
+func HandleFilePeek(ctx context.Context, env *agentRuntime.Env, cmdID string, path string, requestedBytes int) error {
+	log.Printf("file_peek: %s", path)
+
+	if requestedBytes <= 0 || requestedBytes > filePeekMaxBytes {
+		requestedBytes = filePeekMaxBytes
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		return wire.WriteMsg(ctx, env.Conn, wire.FilePeekResult{
+			Type:      "file_peek_result",
+			CommandID: cmdID,
+			Path:      path,
+			Error:     err.Error(),
+		})
+	}
+
+	if info.IsDir() {
+		return wire.WriteMsg(ctx, env.Conn, wire.FilePeekResult{
+			Type:      "file_peek_result",
+			CommandID: cmdID,
+			Path:      path,
+			Size:      info.Size(),
+			Error:     "path is a directory",
+		})
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return wire.WriteMsg(ctx, env.Conn, wire.FilePeekResult{
+			Type:      "file_peek_result",
+			CommandID: cmdID,
+			Path:      path,
+			Size:      info.Size(),
+			Error:     err.Error(),
+		})
+	}
+	defer f.Close()
+
+	buf := make([]byte, requestedBytes)
+	n, err := io.ReadFull(f, buf)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		return wire.WriteMsg(ctx, env.Conn, wire.FilePeekResult{
+			Type:      "file_peek_result",
+			CommandID: cmdID,
+			Path:      path,
+			Size:      info.Size(),
+			Error:     err.Error(),
+		})
+	}
+	data := buf[:n]
+
+	return wire.WriteMsg(ctx, env.Conn, wire.FilePeekResult{
+		Type:      "file_peek_result",
+		CommandID: cmdID,
+		Path:      path,
+		Data:      data,
+		Size:      info.Size(),
+		IsText:    looksLikeText(data),
+	})
+}
+
+func looksLikeText(data []byte) bool {
+	if len(data) == 0 {
+		return true
+	}
+	if !utf8.Valid(data) {
+		return false
+	}
+	for _, b := range data {
+		if b == 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func HandleFileHash(ctx context.Context, env *agentRuntime.Env, cmdID string, path string, algorithm string) error {
+	log.Printf("file_hash: %s algo=%s", path, algorithm)
+
+	algorithm = strings.ToLower(strings.TrimSpace(algorithm))
+	if algorithm == "" {
+		algorithm = "sha256"
+	}
+
+	var h hash.Hash
+	switch algorithm {
+	case "sha256":
+		h = sha256.New()
+	case "sha1":
+		h = sha1.New()
+	case "md5":
+		h = md5.New()
+	case "crc32":
+		h = crc32.NewIEEE()
+	default:
+		return wire.WriteMsg(ctx, env.Conn, wire.FileHashResult{
+			Type:      "file_hash_result",
+			CommandID: cmdID,
+			Path:      path,
+			Algorithm: algorithm,
+			Error:     "unsupported algorithm",
+		})
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		return wire.WriteMsg(ctx, env.Conn, wire.FileHashResult{
+			Type:      "file_hash_result",
+			CommandID: cmdID,
+			Path:      path,
+			Algorithm: algorithm,
+			Error:     err.Error(),
+		})
+	}
+	if info.IsDir() {
+		return wire.WriteMsg(ctx, env.Conn, wire.FileHashResult{
+			Type:      "file_hash_result",
+			CommandID: cmdID,
+			Path:      path,
+			Algorithm: algorithm,
+			Error:     "path is a directory",
+		})
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return wire.WriteMsg(ctx, env.Conn, wire.FileHashResult{
+			Type:      "file_hash_result",
+			CommandID: cmdID,
+			Path:      path,
+			Algorithm: algorithm,
+			Error:     err.Error(),
+		})
+	}
+	defer f.Close()
+
+	if _, err := io.Copy(h, f); err != nil {
+		return wire.WriteMsg(ctx, env.Conn, wire.FileHashResult{
+			Type:      "file_hash_result",
+			CommandID: cmdID,
+			Path:      path,
+			Algorithm: algorithm,
+			Error:     err.Error(),
+		})
+	}
+
+	return wire.WriteMsg(ctx, env.Conn, wire.FileHashResult{
+		Type:      "file_hash_result",
+		CommandID: cmdID,
+		Path:      path,
+		Algorithm: algorithm,
+		Digest:    hex.EncodeToString(h.Sum(nil)),
+		Size:      info.Size(),
+	})
 }
 
 func HandleFileDownload(ctx context.Context, env *agentRuntime.Env, cmdID string, path string) error {
@@ -170,10 +340,10 @@ func HandleFileDownload(ctx context.Context, env *agentRuntime.Env, cmdID string
 		}
 		return wire.WriteMsg(ctx, env.Conn, result)
 	}
-	defer file.Close()
 
 	stat, err := file.Stat()
 	if err != nil {
+		_ = file.Close()
 		result := wire.FileDownload{
 			Type:      "file_download",
 			CommandID: cmdID,
@@ -184,55 +354,84 @@ func HandleFileDownload(ctx context.Context, env *agentRuntime.Env, cmdID string
 	}
 
 	total := stat.Size()
-	offset := int64(0)
-	buffer := make([]byte, maxChunkSize)
 	chunksTotal := 0
 	if total > 0 {
 		chunksTotal = int((total + int64(maxChunkSize) - 1) / int64(maxChunkSize))
 	}
-	chunkIndex := 0
-	reader := bufio.NewReader(file)
 
-	for {
-		n, err := io.ReadFull(reader, buffer)
-		if err == io.EOF {
-			break
+	type readChunk struct {
+		data []byte
+		off  int64
+		idx  int
+		err  error
+	}
+
+	readCtx, cancelReader := context.WithCancel(ctx)
+	pipe := make(chan readChunk, 2)
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		defer close(pipe)
+		defer file.Close()
+		offset := int64(0)
+		idx := 0
+		for {
+			buf := make([]byte, maxChunkSize)
+			n, rerr := io.ReadFull(file, buf)
+			if n > 0 {
+				select {
+				case <-readCtx.Done():
+					return
+				case pipe <- readChunk{data: buf[:n], off: offset, idx: idx}:
+				}
+				offset += int64(n)
+				idx++
+			}
+			if rerr == nil {
+				continue
+			}
+			if rerr == io.EOF || rerr == io.ErrUnexpectedEOF {
+				return
+			}
+			select {
+			case <-readCtx.Done():
+			case pipe <- readChunk{err: rerr, off: offset, idx: idx}:
+			}
+			return
 		}
-		if err != nil && err != io.ErrUnexpectedEOF {
-			result := wire.FileDownload{
+	}()
+
+	defer func() {
+		cancelReader()
+		<-done
+	}()
+
+	for chunk := range pipe {
+		if chunk.err != nil {
+			return wire.WriteMsg(ctx, env.Conn, wire.FileDownload{
 				Type:        "file_download",
 				CommandID:   cmdID,
 				Path:        path,
-				Error:       err.Error(),
-				Offset:      offset,
+				Error:       chunk.err.Error(),
+				Offset:      chunk.off,
 				Total:       total,
-				ChunkIndex:  chunkIndex,
+				ChunkIndex:  chunk.idx,
 				ChunksTotal: chunksTotal,
-			}
-			return wire.WriteMsg(ctx, env.Conn, result)
+			})
 		}
-
-		if n > 0 {
-			chunk := wire.FileDownload{
-				Type:        "file_download",
-				CommandID:   cmdID,
-				Path:        path,
-				Data:        buffer[:n],
-				Offset:      offset,
-				Total:       total,
-				ChunkIndex:  chunkIndex,
-				ChunksTotal: chunksTotal,
-			}
-
-			if err := wire.WriteMsg(ctx, env.Conn, chunk); err != nil {
-				return err
-			}
-			offset += int64(n)
-			chunkIndex++
+		msg := wire.FileDownload{
+			Type:        "file_download",
+			CommandID:   cmdID,
+			Path:        path,
+			Data:        chunk.data,
+			Offset:      chunk.off,
+			Total:       total,
+			ChunkIndex:  chunk.idx,
+			ChunksTotal: chunksTotal,
 		}
-
-		if err == io.ErrUnexpectedEOF {
-			break
+		if err := wire.WriteMsg(ctx, env.Conn, msg); err != nil {
+			return err
 		}
 	}
 

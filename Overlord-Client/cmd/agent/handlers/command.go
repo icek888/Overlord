@@ -2124,6 +2124,29 @@ func HandleCommand(ctx context.Context, env *runtime.Env, envelope map[string]in
 			}
 		})
 		return nil
+	case "file_peek":
+		payload, _ := envelope["payload"].(map[string]interface{})
+		path, _ := payload["path"].(string)
+		bytesToRead := 0
+		if v, ok := payloadInt(payload, "bytes"); ok {
+			bytesToRead = v
+		}
+		goSafe("file_peek", env.Cancel, func() {
+			if err := HandleFilePeek(ctx, env, cmdID, path, bytesToRead); err != nil && err != context.Canceled {
+				log.Printf("file_peek error: %v", err)
+			}
+		})
+		return nil
+	case "file_hash":
+		payload, _ := envelope["payload"].(map[string]interface{})
+		path, _ := payload["path"].(string)
+		algorithm, _ := payload["algorithm"].(string)
+		goSafe("file_hash", env.Cancel, func() {
+			if err := HandleFileHash(ctx, env, cmdID, path, algorithm); err != nil && err != context.Canceled {
+				log.Printf("file_hash error: %v", err)
+			}
+		})
+		return nil
 	case "agent_update":
 		payload, _ := envelope["payload"].(map[string]interface{})
 		path, _ := payload["path"].(string)
@@ -2132,6 +2155,15 @@ func HandleCommand(ctx context.Context, env *runtime.Env, envelope map[string]in
 		return HandleAgentUpdate(ctx, env, cmdID, path, hash, hideWindow)
 	case "process_list":
 		return HandleProcessList(ctx, env, cmdID)
+	case "process_icon":
+		payload, _ := envelope["payload"].(map[string]interface{})
+		items := parseIconRequestItems(payload["items"])
+		goSafe("process_icon", env.Cancel, func() {
+			if err := HandleProcessIcon(ctx, env, cmdID, items); err != nil && err != context.Canceled {
+				log.Printf("process_icon error: %v", err)
+			}
+		})
+		return nil
 	case "process_kill":
 		payload, _ := envelope["payload"].(map[string]interface{})
 		if payload == nil {

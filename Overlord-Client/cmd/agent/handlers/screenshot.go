@@ -214,11 +214,15 @@ func captureScreenshotImageWindows(allDisplays bool) (*image.RGBA, int, image.Re
 	sp := make([]scaledPart, len(parts))
 	for i, part := range parts {
 		sx, sy := 1.0, 1.0
-		if bw := part.bounds.Dx(); bw > 0 {
-			sx = float64(part.img.Rect.Dx()) / float64(bw)
+		bw := part.bounds.Dx()
+		bh := part.bounds.Dy()
+		iw := part.img.Rect.Dx()
+		ih := part.img.Rect.Dy()
+		if bw > 0 && iw > 0 {
+			sx = float64(iw) / float64(bw)
 		}
-		if bh := part.bounds.Dy(); bh > 0 {
-			sy = float64(part.img.Rect.Dy()) / float64(bh)
+		if bh > 0 && ih > 0 {
+			sy = float64(ih) / float64(bh)
 		}
 		sp[i] = scaledPart{
 			img:  part.img,

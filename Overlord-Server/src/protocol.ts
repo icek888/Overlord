@@ -269,6 +269,7 @@ export type ProcessInfo = {
   pid: number;
   ppid: number;
   name: string;
+  exePath?: string;
   cpu: number;
   memory: number;
   username?: string;

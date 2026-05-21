@@ -306,17 +306,12 @@ export async function handleClientRoutes(
     if (!record) {
       return new Response("Not Found", { status: 404 });
     }
-    const etag = `"${clientId}-${record.version}"`;
-    if (req.headers.get("if-none-match") === etag) {
-      return new Response(null, { status: 304, headers: { ETag: etag } });
-    }
     return new Response(record.bytes as unknown as BodyInit, {
       status: 200,
       headers: {
         "Content-Type": record.contentType,
         "Content-Length": String(record.bytes.byteLength),
-        ETag: etag,
-        "Cache-Control": "private, max-age=300",
+        "Cache-Control": "no-store",
       },
     });
   }

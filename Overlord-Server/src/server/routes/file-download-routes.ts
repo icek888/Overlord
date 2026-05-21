@@ -1,4 +1,5 @@
 import fs from "fs/promises";
+import type { FileHandle } from "fs/promises";
 import path from "path";
 import { v4 as uuidv4 } from "uuid";
 import { authenticateRequest } from "../../auth";
@@ -32,6 +33,12 @@ type PendingHttpDownload = {
   resolve: (entry: PendingHttpDownload) => void;
   reject: (error: Error) => void;
   timeout: ReturnType<typeof setTimeout>;
+  streamController?: ReadableStreamDefaultController<Uint8Array>;
+  reorderBuffer?: Map<number, Uint8Array>;
+  nextExpectedOffset?: number;
+  streamErrored?: boolean;
+  onFirstChunk?: () => void;
+  firstChunkSignaled?: boolean;
 };
 
 type DownloadIntent = {
@@ -53,6 +60,13 @@ type UploadIntent = {
   timeout: ReturnType<typeof setTimeout>;
 };
 
+type StreamingPullState = {
+  size: number;
+  done: boolean;
+  error: Error | null;
+  waiters: Array<() => void>;
+};
+
 type UploadPull = {
   id: string;
   clientId: string;
@@ -63,7 +77,75 @@ type UploadPull = {
   expiresAt: number;
   timeout: ReturnType<typeof setTimeout>;
   deleteFile: boolean;
+  state?: StreamingPullState;
+  expectedTotal?: number;
 };
+
+function notifyPullWaiters(state: StreamingPullState) {
+  const list = state.waiters.splice(0);
+  for (const w of list) {
+    try { w(); } catch {}
+  }
+}
+
+function waitForPullProgress(state: StreamingPullState): Promise<void> {
+  if (state.done) return Promise.resolve();
+  return new Promise<void>((resolve) => state.waiters.push(resolve));
+}
+
+function makeIncrementalPullStream(pull: UploadPull): ReadableStream<Uint8Array> {
+  let cancelled = false;
+  return new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const state = pull.state;
+      if (!state) {
+        controller.close();
+        return;
+      }
+      let fh: FileHandle | null = null;
+      try {
+        fh = await fs.open(pull.tmpPath, "r");
+        let pos = 0;
+        const READ_CHUNK = 256 * 1024;
+        while (!cancelled) {
+          while (pos < state.size && !cancelled) {
+            const remaining = state.size - pos;
+            const buf = new Uint8Array(Math.min(remaining, READ_CHUNK));
+            const { bytesRead } = await fh.read(buf, 0, buf.length, pos);
+            if (bytesRead === 0) break;
+            controller.enqueue(bytesRead === buf.length ? buf : buf.subarray(0, bytesRead));
+            pos += bytesRead;
+          }
+          if (cancelled) return;
+          if (state.error) {
+            controller.error(state.error);
+            return;
+          }
+          if (state.done) {
+            controller.close();
+            return;
+          }
+          await Promise.race([
+            waitForPullProgress(state),
+            new Promise<void>((res) => setTimeout(res, 5000)),
+          ]);
+        }
+      } catch (err) {
+        try { controller.error(err); } catch {}
+      } finally {
+        if (fh) {
+          try { await fh.close(); } catch {}
+        }
+      }
+    },
+    cancel() {
+      cancelled = true;
+      if (pull.state) {
+        notifyPullWaiters(pull.state);
+      }
+    },
+  });
+}
 
 type FileDownloadRouteDeps = {
   DATA_DIR: string;
@@ -207,9 +289,6 @@ async function serveDownloadById(
   }
 
   const commandId = uuidv4();
-  const downloadDir = path.join(deps.DATA_DIR, "downloads");
-  await fs.mkdir(downloadDir, { recursive: true });
-  const tmpPath = path.join(downloadDir, `${commandId}.bin`);
 
   let fileName = path.basename(downloadPath) || "download.bin";
   try {
@@ -218,20 +297,47 @@ async function serveDownloadById(
     fileName = "download.bin";
   }
 
-  const fileHandle = await fs.open(tmpPath, "w+");
-
   logger.debug("[filebrowser] http download start", {
     commandId,
     clientId,
     path: downloadPath,
-    tmpPath,
+    mode: "stream",
+  });
+
+  let streamController!: ReadableStreamDefaultController<Uint8Array>;
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      streamController = controller;
+    },
+    cancel() {
+      const p = deps.pendingHttpDownloads.get(commandId);
+      if (p) {
+        clearTimeout(p.timeout);
+        deps.pendingHttpDownloads.delete(commandId);
+      }
+      try {
+        target.ws.send(encodeMessage({ type: "command_abort", commandId } as any));
+      } catch {}
+    },
+  });
+
+  let firstChunkResolve!: () => void;
+  let firstChunkReject!: (err: Error) => void;
+  const firstChunkPromise = new Promise<void>((resolve, reject) => {
+    firstChunkResolve = resolve;
+    firstChunkReject = reject;
   });
 
   const downloadPromise = new Promise<PendingHttpDownload>((resolve, reject) => {
     const timeout = setTimeout(() => {
+      const p = deps.pendingHttpDownloads.get(commandId);
+      if (!p) return;
       deps.pendingHttpDownloads.delete(commandId);
-      void fileHandle.close();
-      void fs.unlink(tmpPath).catch(() => {});
+      if (p.streamController && !p.streamErrored) {
+        p.streamErrored = true;
+        try { p.streamController.error(new Error("Download timed out")); } catch {}
+      }
+      firstChunkReject(new Error("Download timed out"));
       reject(new Error("Download timed out"));
     }, 5 * 60_000);
 
@@ -248,13 +354,39 @@ async function serveDownloadById(
       expectedChunks: 0,
       loggedTotal: false,
       loggedFirstChunk: false,
-      tmpPath,
-      fileHandle,
+      tmpPath: "",
+      fileHandle: null,
       resolve,
       reject,
       timeout,
+      streamController,
+      reorderBuffer: new Map(),
+      nextExpectedOffset: 0,
+      onFirstChunk: () => firstChunkResolve(),
     });
   });
+
+  downloadPromise
+    .then((completed) => {
+      logger.debug("[filebrowser] http download complete", {
+        commandId,
+        clientId,
+        path: downloadPath,
+        total: completed.total,
+        receivedBytes: completed.receivedBytes,
+        expectedChunks: completed.expectedChunks,
+        receivedChunks: completed.receivedChunks.size,
+        streamErrored: !!completed.streamErrored,
+      });
+    })
+    .catch((err) => {
+      logger.debug("[filebrowser] http download failed", {
+        commandId,
+        clientId,
+        path: downloadPath,
+        error: (err as Error)?.message || String(err),
+      });
+    });
 
   target.ws.send(
     encodeMessage({
@@ -281,36 +413,28 @@ async function serveDownloadById(
     success: true,
   });
 
-  let completed: PendingHttpDownload;
   try {
-    completed = await downloadPromise;
+    await firstChunkPromise;
   } catch (err) {
-    logger.debug("[filebrowser] http download failed", {
-      commandId,
-      clientId,
-      path: downloadPath,
-      error: (err as Error)?.message || String(err),
-    });
     return new Response((err as Error).message || "Download failed", { status: 500 });
   }
 
-  logger.debug("[filebrowser] http download complete", {
-    commandId,
-    clientId,
-    path: downloadPath,
-    total: completed.total,
-    receivedBytes: completed.receivedBytes,
-    expectedChunks: completed.expectedChunks,
-    receivedChunks: completed.receivedChunks.size,
-  });
+  const installed = deps.pendingHttpDownloads.get(commandId);
+  if (installed?.streamErrored) {
+    return new Response("Download failed", { status: 500 });
+  }
 
-  const headers = {
+  const headers: Record<string, string> = {
     ...deps.secureHeaders("application/octet-stream"),
-    "Content-Disposition": `attachment; filename="${completed.fileName}"`,
+    "Content-Disposition": `attachment; filename="${fileName}"`,
     "Cache-Control": "no-store, private",
   };
+  const total = installed?.total ?? 0;
+  if (total > 0) {
+    headers["Content-Length"] = String(total);
+  }
 
-  return new Response(streamFileAndDelete(completed.tmpPath), { headers });
+  return new Response(stream, { headers });
 }
 
 export function createUploadPull(opts: {
@@ -459,59 +583,26 @@ export async function handleFileDownloadRoutes(
 
     const uploadDir = path.join(deps.DATA_DIR, "uploads");
     await fs.mkdir(uploadDir, { recursive: true });
-    const tmpPath = path.join(uploadDir, `${uploadId}.bin`);
-
-    let stagedSize = 0;
-    const fileHandle = await fs.open(tmpPath, "w");
-    try {
-      if (req.body) {
-        const reader = req.body.getReader();
-        let position = 0;
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (!value || value.byteLength === 0) continue;
-          await fileHandle.write(value, 0, value.byteLength, position);
-          position += value.byteLength;
-          stagedSize += value.byteLength;
-        }
-      } else {
-        const bytes = new Uint8Array(await req.arrayBuffer());
-        if (bytes.byteLength > 0) {
-          await fileHandle.write(bytes, 0, bytes.byteLength, 0);
-          stagedSize = bytes.byteLength;
-        }
-      }
-    } catch (err) {
-      logger.debug("[filebrowser] http upload stage error", {
-        uploadId,
-        error: (err as Error)?.message || String(err),
-      });
-      await fileHandle.close();
-      await fs.unlink(tmpPath).catch(() => {});
-      return new Response("Upload staging failed", { status: 500 });
-    }
-    await fileHandle.close();
-
-    logger.debug("[filebrowser] http upload staged bytes", {
-      uploadId,
-      bytes: stagedSize,
-      clientId: intent.clientId,
-      path: intent.path,
-    });
-
-    uploadIntents.delete(uploadId);
-    clearTimeout(intent.timeout);
 
     const pullId = uuidv4();
+    const tmpPath = path.join(uploadDir, `${pullId}.bin`);
+
+    const contentLength = Number(req.headers.get("content-length") || 0);
+    const expectedTotal = Number.isFinite(contentLength) && contentLength >= 0 ? contentLength : 0;
+    const canStream = !!req.body && expectedTotal > 0;
+
     const pullExpiresAt = Date.now() + FILE_UPLOAD_PULL_TTL_MS;
     const pullTimeout = setTimeout(() => {
-      const pull = uploadPulls.get(pullId);
+      const stale = uploadPulls.get(pullId);
       uploadPulls.delete(pullId);
-      if (pull && pull.deleteFile) {
-        void fs.unlink(pull.tmpPath).catch(() => {});
+      if (stale && stale.deleteFile) {
+        void fs.unlink(stale.tmpPath).catch(() => {});
       }
     }, FILE_UPLOAD_PULL_TTL_MS);
+
+    const state: StreamingPullState | undefined = canStream
+      ? { size: 0, done: false, error: null, waiters: [] }
+      : undefined;
 
     uploadPulls.set(pullId, {
       id: pullId,
@@ -519,10 +610,113 @@ export async function handleFileDownloadRoutes(
       path: intent.path,
       fileName: intent.fileName,
       tmpPath,
-      size: stagedSize,
+      size: expectedTotal,
       expiresAt: pullExpiresAt,
       timeout: pullTimeout,
       deleteFile: true,
+      state,
+      expectedTotal,
+    });
+
+    uploadIntents.delete(uploadId);
+    clearTimeout(intent.timeout);
+
+    let agentCommandId: string | null = null;
+    if (canStream) {
+      const target = clientManager.getClient(intent.clientId);
+      if (target) {
+        agentCommandId = uuidv4();
+        try {
+          target.ws.send(
+            encodeMessage({
+              type: "command",
+              commandType: "file_upload_http",
+              id: agentCommandId,
+              payload: {
+                path: intent.path,
+                url: `${url.origin}/api/file/upload/pull/${encodeURIComponent(pullId)}`,
+                total: expectedTotal,
+              },
+            } as any),
+          );
+          logger.debug("[filebrowser] http upload eagerly notified agent", {
+            uploadId,
+            pullId,
+            clientId: intent.clientId,
+            total: expectedTotal,
+            commandId: agentCommandId,
+          });
+        } catch (err) {
+          logger.debug("[filebrowser] http upload eager notify failed", {
+            uploadId,
+            error: (err as Error)?.message || String(err),
+          });
+          agentCommandId = null;
+        }
+      }
+    }
+
+    let stagedSize = 0;
+    const fileHandle = await fs.open(tmpPath, "w");
+    try {
+      if (req.body) {
+        const reader = req.body.getReader();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (!value || value.byteLength === 0) continue;
+          await fileHandle.write(value, 0, value.byteLength, stagedSize);
+          stagedSize += value.byteLength;
+          if (state) {
+            state.size = stagedSize;
+            notifyPullWaiters(state);
+          }
+        }
+      } else {
+        const bytes = new Uint8Array(await req.arrayBuffer());
+        if (bytes.byteLength > 0) {
+          await fileHandle.write(bytes, 0, bytes.byteLength, 0);
+          stagedSize = bytes.byteLength;
+          if (state) {
+            state.size = stagedSize;
+            notifyPullWaiters(state);
+          }
+        }
+      }
+    } catch (err) {
+      logger.debug("[filebrowser] http upload stage error", {
+        uploadId,
+        error: (err as Error)?.message || String(err),
+      });
+      if (state) {
+        state.error = err as Error;
+        state.done = true;
+        notifyPullWaiters(state);
+      }
+      await fileHandle.close();
+      await fs.unlink(tmpPath).catch(() => {});
+      uploadPulls.delete(pullId);
+      clearTimeout(pullTimeout);
+      return new Response("Upload staging failed", { status: 500 });
+    }
+    await fileHandle.close();
+
+    if (state) {
+      state.done = true;
+      notifyPullWaiters(state);
+    }
+    const finalPull = uploadPulls.get(pullId);
+    if (finalPull) {
+      finalPull.size = stagedSize;
+    }
+
+    logger.debug("[filebrowser] http upload staged bytes", {
+      uploadId,
+      pullId,
+      bytes: stagedSize,
+      clientId: intent.clientId,
+      path: intent.path,
+      streamed: canStream,
     });
 
     return Response.json({
@@ -530,6 +724,8 @@ export async function handleFileDownloadRoutes(
       size: stagedSize,
       path: intent.path,
       pullUrl: `${url.origin}/api/file/upload/pull/${encodeURIComponent(pullId)}`,
+      agentCommandId,
+      agentNotified: !!agentCommandId,
     });
   }
 
@@ -581,6 +777,29 @@ export async function handleFileDownloadRoutes(
     if (pull.deleteFile) {
       uploadPulls.delete(pullId);
       clearTimeout(pull.timeout);
+
+      if (pull.state && !rangeHeader) {
+        const expected = pull.expectedTotal ?? pull.size;
+        const stream = makeIncrementalPullStream(pull);
+        const cleanupOnDone = stream.pipeThrough(new TransformStream({
+          flush: async () => {
+            await fs.unlink(pull.tmpPath).catch(() => {});
+          },
+        }));
+        return new Response(cleanupOnDone, {
+          headers: { ...baseHeaders, "Content-Length": String(expected) },
+        });
+      }
+
+      if (pull.state && rangeHeader) {
+        while (!pull.state.done && !pull.state.error) {
+          await waitForPullProgress(pull.state);
+        }
+        if (pull.state.error) {
+          await fs.unlink(pull.tmpPath).catch(() => {});
+          return new Response("Upload streaming failed", { status: 500 });
+        }
+      }
       return new Response(streamFileAndDelete(pull.tmpPath), {
         headers: { ...baseHeaders, "Content-Length": String(pull.size) },
       });

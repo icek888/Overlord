@@ -37,6 +37,17 @@ func getFilePermissions(info os.FileInfo) (mode, owner, group string) {
 	return
 }
 
+func DiskUsage(path string) (int64, int64, string, bool) {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(path, &st); err != nil {
+		return 0, 0, "", false
+	}
+	bsize := int64(st.Bsize)
+	free := int64(st.Bavail) * bsize
+	total := int64(st.Blocks) * bsize
+	return free, total, "", true
+}
+
 func enrichFileEntry(entry *wire.FileEntry, info os.FileInfo) {
 	mode, owner, group := getFilePermissions(info)
 	entry.Mode = mode

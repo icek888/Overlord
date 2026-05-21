@@ -13,6 +13,12 @@ let sortField = "cpu";
 let sortDirection = "desc";
 let searchTerm = "";
 
+const procIconCache = new Map();
+const procIconQueue = [];
+let procIconFlushScheduled = false;
+const PROC_ICON_BATCH_SIZE = 32;
+const PROC_ICON_BATCH_DELAY_MS = 60;
+
 const statusEl = document.getElementById("status-indicator");
 const processCountEl = document.getElementById("process-count");
 const processListEl = document.getElementById("process-list");
@@ -107,6 +113,9 @@ function handleMessage(msg) {
     case "process_list_result":
       handleProcessList(msg);
       break;
+    case "process_icon_result":
+      handleProcessIconResult(msg);
+      break;
     case "command_result":
       handleCommandResult(msg);
       break;
@@ -148,6 +157,7 @@ function handleProcessList(msg) {
   updateStatus("connected", "Connected");
   buildProcessTree();
   renderProcesses();
+  requestProcessIcons(processes);
 }
 
 function buildProcessTree() {
@@ -314,22 +324,31 @@ function rowInnerHtml(proc, depth) {
   }
 
   let nameColor = "text-slate-200";
-  let iconClass = "fa-microchip";
-  let iconColor = "text-blue-400";
+  let fallbackIcon = "fa-microchip";
+  let fallbackColor = "text-blue-400";
   if (proc.type === "system") {
     nameColor = "text-purple-400";
-    iconColor = "text-purple-400";
+    fallbackColor = "text-purple-400";
   } else if (proc.type === "service") {
     nameColor = "text-cyan-400";
-    iconColor = "text-cyan-400";
+    fallbackColor = "text-cyan-400";
   } else if (proc.type === "own") {
     nameColor = "text-green-300";
-    iconColor = "text-green-400";
+    fallbackColor = "text-green-400";
   }
   if (proc.self) {
     nameColor = "text-yellow-300 font-semibold";
-    iconClass = "fa-crosshairs";
-    iconColor = "text-yellow-400";
+    fallbackIcon = "fa-crosshairs";
+    fallbackColor = "text-yellow-400";
+  }
+
+  const iconKey = procIconKey(proc);
+  const cached = iconKey ? procIconCache.get(iconKey) : null;
+  let procIcon;
+  if (cached && cached.blobUrl) {
+    procIcon = `<span class="inline-flex w-4 h-4 items-center justify-center shrink-0" data-proc-icon-key="${escapeHtml(iconKey)}"><img src="${cached.blobUrl}" class="w-4 h-4 object-contain pointer-events-none" alt="" draggable="false"></span>`;
+  } else {
+    procIcon = `<span class="inline-flex w-4 h-4 items-center justify-center shrink-0"${iconKey ? ` data-proc-icon-key="${escapeHtml(iconKey)}"` : ""}><i class="fa-solid ${fallbackIcon} ${fallbackColor}"></i></span>`;
   }
 
   const selfBadge = proc.self
@@ -339,7 +358,7 @@ function rowInnerHtml(proc, depth) {
   return `
     <div class="col-span-1 text-sm font-mono text-slate-400">${proc.pid}</div>
     <div class="col-span-4 flex items-center gap-1 truncate">
-      ${indent}${treeIcon}<i class="fa-solid ${iconClass} ${iconColor}"></i>
+      ${indent}${treeIcon}${procIcon}
       <span class="truncate ${nameColor}">${escapeHtml(proc.name)}</span>${selfBadge}
     </div>
     <div class="col-span-2 text-sm ${cpuColor} font-semibold">${displayCpu.toFixed(1)}%</div>
@@ -614,6 +633,61 @@ setInterval(() => {
     requestProcessList();
   }
 }, 3000);
+
+function procIconKey(proc) {
+  if (!proc.exePath) return null;
+  return proc.exePath.toLowerCase();
+}
+
+function requestProcessIcons(procs) {
+  for (const proc of procs) {
+    const key = procIconKey(proc);
+    if (!key) continue;
+    if (procIconCache.has(key)) continue;
+    procIconCache.set(key, { pending: true });
+    procIconQueue.push({ key, path: proc.exePath });
+  }
+  if (procIconQueue.length > 0) scheduleProcIconFlush();
+}
+
+function scheduleProcIconFlush() {
+  if (procIconFlushScheduled) return;
+  procIconFlushScheduled = true;
+  setTimeout(flushProcIconQueue, PROC_ICON_BATCH_DELAY_MS);
+}
+
+function flushProcIconQueue() {
+  procIconFlushScheduled = false;
+  if (procIconQueue.length === 0) return;
+  const batch = procIconQueue.splice(0, PROC_ICON_BATCH_SIZE);
+  send({ type: "process_icon", items: batch });
+  if (procIconQueue.length > 0) scheduleProcIconFlush();
+}
+
+function handleProcessIconResult(msg) {
+  const items = Array.isArray(msg.icons) ? msg.icons : [];
+  for (const item of items) {
+    if (!item || !item.key) continue;
+    const entry = procIconCache.get(item.key) || {};
+    entry.pending = false;
+    if (item.png && item.png.length > 0) {
+      const blob = new Blob([item.png], { type: "image/png" });
+      entry.blobUrl = URL.createObjectURL(blob);
+    } else {
+      entry.failed = true;
+    }
+    procIconCache.set(item.key, entry);
+    applyProcIconToDom(item.key, entry);
+  }
+}
+
+function applyProcIconToDom(key, entry) {
+  if (!entry || !entry.blobUrl) return;
+  const escaped = (typeof CSS !== "undefined" && CSS.escape) ? CSS.escape(key) : key.replace(/"/g, '\\"');
+  document.querySelectorAll(`[data-proc-icon-key="${escaped}"]`).forEach((el) => {
+    el.innerHTML = `<img src="${entry.blobUrl}" class="w-4 h-4 object-contain pointer-events-none" alt="" draggable="false">`;
+  });
+}
 
 updateStatus("connecting", "Connecting...");
 checkFeatureAccess("processes", clientId).then(ok => ok && connect());

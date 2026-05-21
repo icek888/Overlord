@@ -30,6 +30,8 @@ type WsViewerClusterDeps = {
   consumeHttpDownloadPayload: (payload: any) => Promise<void> | void;
 };
 
+const WS_UPLOAD_MAX_TOTAL = 8 * 1024 * 1024;
+
 const fileBrowserCommandSessions = new Map<string, string>();
 
 function trackFileBrowserCommand(commandId: string, sessionId: string): void {
@@ -142,6 +144,23 @@ export function handleFileBrowserViewerMessage(ws: ServerWebSocket<SocketData>, 
         target.ws.send(encodeMessage({ type: "command", commandType: "file_dirsize", id: routedId, payload: actualPayload } as any));
         metrics.recordCommand("file_dirsize");
         break;
+      case "file_peek":
+        target.ws.send(encodeMessage({ type: "command", commandType: "file_peek", id: routedId, payload: actualPayload } as any));
+        metrics.recordCommand("file_peek");
+        break;
+      case "file_hash":
+        target.ws.send(encodeMessage({ type: "command", commandType: "file_hash", id: routedId, payload: actualPayload } as any));
+        metrics.recordCommand("file_hash");
+        logAudit({
+          timestamp: Date.now(),
+          username: (ws.data as any).username || "unknown",
+          ip: ws.data.ip || "unknown",
+          action: AuditAction.FILE_DOWNLOAD,
+          targetClientId: clientId,
+          details: JSON.stringify({ path: actualPayload?.path || "", op: "hash", algorithm: actualPayload?.algorithm || "sha256" }),
+          success: true,
+        });
+        break;
       case "silent_exec":
         logger.debug(`[DEBUG] Forwarding silent_exec to client ${clientId}:`, actualPayload.command);
         target.ws.send(encodeMessage({ type: "command", commandType: "silent_exec", id: routedId, payload: actualPayload } as any));
@@ -198,14 +217,43 @@ export function handleFileBrowserViewerMessage(ws: ServerWebSocket<SocketData>, 
     case "file_upload": {
       const upload = normalizeFileUploadPayload(payload);
       if (!upload) return;
-      safeSendViewer(ws, {
-        type: "file_upload_result",
-        commandId,
-        transferId: upload.transferId,
-        path: upload.path,
-        ok: false,
-        error: "chunked uploads are disabled; refresh and retry",
-      });
+      if (upload.total > WS_UPLOAD_MAX_TOTAL) {
+        safeSendViewer(ws, {
+          type: "file_upload_result",
+          commandId,
+          transferId: upload.transferId,
+          path: upload.path,
+          ok: false,
+          error: `file too large for ws upload (${upload.total} > ${WS_UPLOAD_MAX_TOTAL}); use http upload`,
+        });
+        break;
+      }
+      const uploadCommandId = payload.commandId || commandId;
+      if (ws.data.sessionId) trackFileBrowserCommand(uploadCommandId, ws.data.sessionId);
+      target.ws.send(encodeMessage({
+        type: "command",
+        commandType: "file_upload",
+        id: uploadCommandId,
+        payload: {
+          path: upload.path,
+          data: upload.data,
+          offset: upload.offset,
+          total: upload.total,
+          transferId: upload.transferId,
+        },
+      } as any));
+      metrics.recordCommand("file_upload");
+      if (upload.offset === 0) {
+        logAudit({
+          timestamp: Date.now(),
+          username: (ws.data as any).username || "unknown",
+          ip: ws.data.ip || "unknown",
+          action: AuditAction.FILE_UPLOAD,
+          targetClientId: clientId,
+          details: JSON.stringify({ path: upload.path, total: upload.total, mode: "ws_chunked" }),
+          success: true,
+        });
+      }
       break;
     }
     case "file_delete": {
@@ -311,6 +359,8 @@ export function handleFileBrowserMessage(clientId: string, payload: any, deps: W
         return item;
       });
       safeSendViewer(session.viewer, { ...payload, thumbs });
+    } else if (payload.type === "file_peek_result" && payload.data && !(payload.data instanceof Uint8Array)) {
+      safeSendViewer(session.viewer, { ...payload, data: new Uint8Array(payload.data) });
     } else {
       safeSendViewer(session.viewer, payload);
     }
@@ -350,6 +400,10 @@ export function handleProcessViewerMessage(ws: ServerWebSocket<SocketData>, raw:
       target.ws.send(encodeMessage({ type: "command", commandType: "process_list", id: commandId } as any));
       metrics.recordCommand("process_list");
       break;
+    case "process_icon":
+      target.ws.send(encodeMessage({ type: "command", commandType: "process_icon", id: commandId, payload: { items: payload.items || [] } } as any));
+      metrics.recordCommand("process_icon");
+      break;
     case "process_kill": {
       const pid = Number(payload.pid);
       if (!Number.isFinite(pid) || pid <= 0) {
@@ -387,7 +441,17 @@ export function handleProcessViewerMessage(ws: ServerWebSocket<SocketData>, raw:
 
 export function handleProcessMessage(clientId: string, payload: any) {
   for (const session of sessionManager.getProcessSessionsByClient(clientId)) {
-    safeSendViewer(session.viewer, payload);
+    if (payload.type === "process_icon_result" && Array.isArray(payload.icons)) {
+      const icons = payload.icons.map((item: any) => {
+        if (item && item.png && !(item.png instanceof Uint8Array)) {
+          return { ...item, png: new Uint8Array(item.png) };
+        }
+        return item;
+      });
+      safeSendViewer(session.viewer, { ...payload, icons });
+    } else {
+      safeSendViewer(session.viewer, payload);
+    }
   }
 }
 

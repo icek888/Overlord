@@ -112,6 +112,10 @@ type FileEntry struct {
 	Group   string `msgpack:"group,omitempty"`
 	// windows file attributes
 	Attrs uint32 `msgpack:"attrs,omitempty"`
+	// Drive / volume disk usage (populated only at root listings for drive entries).
+	FreeBytes  int64 `msgpack:"freeBytes,omitempty"`
+	TotalBytes int64 `msgpack:"totalBytes,omitempty"`
+	FSType     string `msgpack:"fsType,omitempty"`
 }
 
 type FileListResult struct {
@@ -151,6 +155,7 @@ type ProcessInfo struct {
 	PID      int32   `msgpack:"pid"`
 	PPID     int32   `msgpack:"ppid"`
 	Name     string  `msgpack:"name"`
+	ExePath  string  `msgpack:"exePath,omitempty"`
 	CPU      float64 `msgpack:"cpu"`
 	Memory   uint64  `msgpack:"memory"`
 	Username string  `msgpack:"username,omitempty"`
@@ -225,6 +230,26 @@ type FileThumbnailResult struct {
 	Type      string                    `msgpack:"type"`
 	CommandID string                    `msgpack:"commandId,omitempty"`
 	Thumbs    []FileThumbnailResultItem `msgpack:"thumbs"`
+}
+
+type FilePeekResult struct {
+	Type      string `msgpack:"type"`
+	CommandID string `msgpack:"commandId,omitempty"`
+	Path      string `msgpack:"path"`
+	Data      []byte `msgpack:"data,omitempty"`
+	Size      int64  `msgpack:"size"`
+	IsText    bool   `msgpack:"isText"`
+	Error     string `msgpack:"error,omitempty"`
+}
+
+type FileHashResult struct {
+	Type      string `msgpack:"type"`
+	CommandID string `msgpack:"commandId,omitempty"`
+	Path      string `msgpack:"path"`
+	Algorithm string `msgpack:"algorithm"`
+	Digest    string `msgpack:"digest"`
+	Size      int64  `msgpack:"size"`
+	Error     string `msgpack:"error,omitempty"`
 }
 
 type FolderSizeResult struct {

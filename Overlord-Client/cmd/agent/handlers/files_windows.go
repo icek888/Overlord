@@ -8,9 +8,45 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
+	"unsafe"
 
 	"overlord-client/cmd/agent/wire"
 )
+
+func DiskUsage(path string) (int64, int64, string, bool) {
+	kernel32 := syscall.NewLazyDLL("kernel32.dll")
+	getDiskFreeSpaceExW := kernel32.NewProc("GetDiskFreeSpaceExW")
+	getVolumeInformationW := kernel32.NewProc("GetVolumeInformationW")
+
+	root, err := syscall.UTF16PtrFromString(path)
+	if err != nil {
+		return 0, 0, "", false
+	}
+	var freeAvail, totalBytes, totalFree uint64
+	r1, _, _ := getDiskFreeSpaceExW.Call(
+		uintptr(unsafe.Pointer(root)),
+		uintptr(unsafe.Pointer(&freeAvail)),
+		uintptr(unsafe.Pointer(&totalBytes)),
+		uintptr(unsafe.Pointer(&totalFree)),
+	)
+	if r1 == 0 {
+		return 0, 0, "", false
+	}
+
+	fsType := ""
+	var fsNameBuf [32]uint16
+	r2, _, _ := getVolumeInformationW.Call(
+		uintptr(unsafe.Pointer(root)),
+		0, 0, 0, 0, 0,
+		uintptr(unsafe.Pointer(&fsNameBuf[0])),
+		uintptr(len(fsNameBuf)),
+	)
+	if r2 != 0 {
+		fsType = syscall.UTF16ToString(fsNameBuf[:])
+	}
+
+	return int64(freeAvail), int64(totalBytes), fsType, true
+}
 
 func enrichFileEntry(entry *wire.FileEntry, info os.FileInfo) {
 	if d, ok := info.Sys().(*syscall.Win32FileAttributeData); ok {
