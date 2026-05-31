@@ -262,8 +262,9 @@ export async function loadPluginBundle(
   let binaryPath: string | null = null;
 
   if (manifest.binaries && clientOS && clientArch) {
-    const key = `${clientOS}-${clientArch}`;
-    const filename = manifest.binaries[key];
+    const filename = getPluginBinaryCandidateKeys(clientOS, clientArch)
+      .map((key) => manifest.binaries?.[key])
+      .find((name): name is string => typeof name === "string" && name.length > 0);
     if (filename) {
       const candidate = path.join(dir, filename);
       try {
@@ -274,7 +275,9 @@ export async function loadPluginBundle(
   }
 
   if (!binaryPath) {
-    const platformKey = clientOS && clientArch ? `${clientOS}-${clientArch}` : "unknown";
+    const platformKey = clientOS && clientArch ? formatPluginPlatformKey(clientOS, clientArch) : "unknown";
+    const normalizedOS = normalizePluginOS(clientOS);
+    const normalizedArch = normalizePluginArch(clientArch);
     const files = await fs.readdir(dir);
     const archRegex = /-(linux|darwin|windows|freebsd)-(amd64|arm64|arm|386)\.(so|dll|dylib)$/i;
 
@@ -282,8 +285,8 @@ export async function loadPluginBundle(
       const m = f.match(archRegex);
       if (m) {
         return (
-          m[1].toLowerCase() === (clientOS || "").toLowerCase() &&
-          m[2].toLowerCase() === (clientArch || "").toLowerCase()
+          m[1].toLowerCase() === normalizedOS &&
+          m[2].toLowerCase() === normalizedArch
         );
       }
       const fl = f.toLowerCase();
@@ -299,6 +302,39 @@ export async function loadPluginBundle(
 
   const stat = await fs.stat(binaryPath);
   return { manifest, binaryPath, size: stat.size };
+}
+
+function getPluginBinaryCandidateKeys(clientOS?: string, clientArch?: string): string[] {
+  if (!clientOS || !clientArch) return [];
+  const rawKey = `${clientOS}-${clientArch}`.toLowerCase();
+  const normalizedKey = formatPluginPlatformKey(clientOS, clientArch);
+  return Array.from(
+    new Set([normalizedKey, rawKey].filter((key) => !key.startsWith("unknown-") && !key.endsWith("-unknown"))),
+  );
+}
+
+function formatPluginPlatformKey(clientOS?: string, clientArch?: string): string {
+  return `${normalizePluginOS(clientOS)}-${normalizePluginArch(clientArch)}`;
+}
+
+function normalizePluginOS(value?: string): string {
+  const os = (value || "").trim().toLowerCase();
+  if (!os) return "unknown";
+  if (os.includes("windows") || os === "win32") return "windows";
+  if (os.includes("mac os") || os.includes("macos") || os.includes("os x") || os === "darwin") return "darwin";
+  if (os.includes("linux")) return "linux";
+  if (os.includes("freebsd")) return "freebsd";
+  return os;
+}
+
+function normalizePluginArch(value?: string): string {
+  const arch = (value || "").trim().toLowerCase();
+  if (!arch) return "unknown";
+  if (arch === "x64" || arch === "x86_64") return "amd64";
+  if (arch === "ia32" || arch === "i386" || arch === "x86") return "386";
+  if (arch === "aarch64") return "arm64";
+  if (arch === "armv7" || arch === "armv6") return "arm";
+  return arch;
 }
 
 export type PluginPull = {
