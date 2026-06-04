@@ -330,7 +330,11 @@ export async function handleMiscRoutes(
     snapshot.sessions.fileBrowser = deps.getFileBrowserSessionCount();
     snapshot.sessions.process = deps.getProcessSessionCount();
 
-    const history = metrics.getHistory();
+    const requestedHistoryLimit = Number(url.searchParams.get("historyLimit") || 240);
+    const historyLimit = Number.isFinite(requestedHistoryLimit)
+      ? Math.max(1, Math.min(2000, requestedHistoryLimit))
+      : 240;
+    const history = metrics.getHistory().slice(-historyLimit);
 
     return new Response(JSON.stringify({ snapshot, history }), {
       headers: { "Content-Type": "application/json" },
