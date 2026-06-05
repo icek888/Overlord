@@ -432,7 +432,7 @@ export async function handleMiscRoutes(
     }
 
     try {
-      requirePermission(user, "system:configure");
+      requirePermission(user, "system:security");
     } catch (error) {
       if (error instanceof Response) return error;
       return new Response("Forbidden", { status: 403 });
@@ -494,7 +494,7 @@ export async function handleMiscRoutes(
     }
 
     try {
-      requirePermission(user, "system:configure");
+      requirePermission(user, "system:tls");
     } catch (error) {
       if (error instanceof Response) return error;
       return new Response("Forbidden", { status: 403 });
@@ -549,7 +549,7 @@ export async function handleMiscRoutes(
     }
 
     try {
-      requirePermission(user, "system:configure");
+      requirePermission(user, "system:tls");
     } catch (error) {
       if (error instanceof Response) return error;
       return new Response("Forbidden", { status: 403 });
@@ -790,7 +790,7 @@ export async function handleMiscRoutes(
       return new Response("Unauthorized", { status: 401 });
     }
     try {
-      requirePermission(user, "system:configure");
+      requirePermission(user, "system:export-import");
     } catch (error) {
       if (error instanceof Response) return error;
       return new Response("Forbidden", { status: 403 });
@@ -823,7 +823,7 @@ export async function handleMiscRoutes(
       return new Response("Unauthorized", { status: 401 });
     }
     try {
-      requirePermission(user, "system:configure");
+      requirePermission(user, "system:export-import");
     } catch (error) {
       if (error instanceof Response) return error;
       return new Response("Forbidden", { status: 403 });
@@ -875,7 +875,7 @@ export async function handleMiscRoutes(
     }
 
     try {
-      requirePermission(user, "system:configure");
+      requirePermission(user, "system:chat");
     } catch (error) {
       if (error instanceof Response) return error;
       return new Response("Forbidden", { status: 403 });
@@ -916,7 +916,7 @@ export async function handleMiscRoutes(
       return new Response("Unauthorized", { status: 401 });
     }
     try {
-      requirePermission(user, "system:configure");
+      requirePermission(user, "system:appearance");
     } catch (error) {
       if (error instanceof Response) return error;
       return new Response("Forbidden", { status: 403 });
@@ -981,7 +981,7 @@ export async function handleMiscRoutes(
   if (url.pathname === "/api/settings/registration") {
     const user = await authenticateRequest(req);
     if (!user) return new Response("Unauthorized", { status: 401 });
-    try { requirePermission(user, "system:configure"); } catch (error) { if (error instanceof Response) return error; return new Response("Forbidden", { status: 403 }); }
+    try { requirePermission(user, "system:registration"); } catch (error) { if (error instanceof Response) return error; return new Response("Forbidden", { status: 403 }); }
 
     if (req.method === "GET") {
       return Response.json({ registration: getConfig().registration }, { headers: deps.CORS_HEADERS });
@@ -1017,7 +1017,7 @@ export async function handleMiscRoutes(
   if (url.pathname === "/api/settings/build-rate-limit") {
     const user = await authenticateRequest(req);
     if (!user) return new Response("Unauthorized", { status: 401 });
-    try { requirePermission(user, "system:configure"); } catch (error) { if (error instanceof Response) return error; return new Response("Forbidden", { status: 403 }); }
+    try { requirePermission(user, "system:build-limits"); } catch (error) { if (error instanceof Response) return error; return new Response("Forbidden", { status: 403 }); }
 
     if (req.method === "GET") {
       return Response.json({ buildRateLimit: getConfig().buildRateLimit }, { headers: deps.CORS_HEADERS });
@@ -1058,7 +1058,7 @@ export async function handleMiscRoutes(
     }
 
     if (req.method === "PUT") {
-      try { requirePermission(user, "system:configure"); } catch (error) { if (error instanceof Response) return error; return new Response("Forbidden", { status: 403 }); }
+      try { requirePermission(user, "system:thumbnails"); } catch (error) { if (error instanceof Response) return error; return new Response("Forbidden", { status: 403 }); }
 
       let body: any = {};
       try { body = await req.json(); } catch {
@@ -1087,7 +1087,7 @@ export async function handleMiscRoutes(
   if (req.method === "GET" && url.pathname === "/api/settings/health") {
     const user = await authenticateRequest(req);
     if (!user) return new Response("Unauthorized", { status: 401 });
-    if (user.role !== "admin") return new Response("Forbidden", { status: 403 });
+    try { requirePermission(user, "system:health"); } catch (error) { if (error instanceof Response) return error; return new Response("Forbidden", { status: 403 }); }
 
     const mem = process.memoryUsage();
     return Response.json({
@@ -1116,7 +1116,7 @@ export async function handleMiscRoutes(
   if (req.method === "POST" && url.pathname === "/api/settings/gc") {
     const user = await authenticateRequest(req);
     if (!user) return new Response("Unauthorized", { status: 401 });
-    if (user.role !== "admin") return new Response("Forbidden", { status: 403 });
+    try { requirePermission(user, "system:health:manage"); } catch (error) { if (error instanceof Response) return error; return new Response("Forbidden", { status: 403 }); }
 
     const before = process.memoryUsage().heapUsed;
     if (typeof Bun !== "undefined" && typeof (Bun as any).gc === "function") {
@@ -1130,7 +1130,7 @@ export async function handleMiscRoutes(
   if (req.method === "POST" && url.pathname === "/api/settings/profile") {
     const user = await authenticateRequest(req);
     if (!user) return new Response("Unauthorized", { status: 401 });
-    if (user.role !== "admin") return new Response("Forbidden", { status: 403 });
+    try { requirePermission(user, "system:profiler"); } catch (error) { if (error instanceof Response) return error; return new Response("Forbidden", { status: 403 }); }
 
     if (activeServerProfile) {
       return Response.json({ error: "A server profile capture is already running." }, { status: 409 });
