@@ -1,5 +1,6 @@
 import { NAV_GROUPS } from "./nav/template.js";
 import { CAPTURE_FLAG } from "./keyboard-capture.js";
+import { osBadge } from "./viewUtils.js";
 
 const ALL_PER_CLIENT_ACTIONS = [
   { key: "console",    feature: "console",        label: "Console",        icon: "fa-terminal",     color: "text-emerald-400", href: (id) => `/${id}/console` },
@@ -167,10 +168,9 @@ function renderRow(r, active) {
   if (r.kind === "client") {
     const c = r.client;
     const dot = c.online ? "background:#10b981" : "background:#475569";
-    const os = (c.os || "").toLowerCase();
-    const osIcon = os.includes("win") ? "fa-windows" : os.includes("mac") || os.includes("darwin") ? "fa-apple" : os.includes("linux") ? "fa-linux" : os.includes("android") ? "fa-android" : "fa-circle-question";
+    const os = osBadge(c.os || "");
     return `<div class="${activeCls}" data-client="${c.id}">
-      <i class="fa-brands ${osIcon} text-slate-400" style="width:18px;text-align:center;"></i>
+      <i class="fa ${os.icon} cv-tone-${os.tone}" style="width:18px;text-align:center;"></i>
       <span class="cmdp-status-dot" style="${dot}"></span>
       ${flagFor(c.country)}
       <span class="cmdp-label">${r.label}</span>

@@ -438,6 +438,44 @@ p {
   color: #c7d2fe;
   border-color: rgba(59, 130, 246, 0.18);
 }
+.pill-kali,
+.pill-alpine {
+  background: rgba(14, 165, 233, 0.08);
+  color: #bae6fd;
+  border-color: rgba(14, 165, 233, 0.18);
+}
+.pill-redhat,
+.pill-freebsd {
+  background: rgba(239, 68, 68, 0.09);
+  color: #fecaca;
+  border-color: rgba(239, 68, 68, 0.2);
+}
+.pill-centos,
+.pill-gentoo {
+  background: rgba(139, 92, 246, 0.1);
+  color: #ddd6fe;
+  border-color: rgba(139, 92, 246, 0.22);
+}
+.pill-suse,
+.pill-manjaro,
+.pill-rocky,
+.pill-alma,
+.pill-pop,
+.pill-nixos {
+  background: rgba(16, 185, 129, 0.08);
+  color: #bbf7d0;
+  border-color: rgba(16, 185, 129, 0.18);
+}
+.pill-raspi {
+  background: rgba(219, 39, 119, 0.08);
+  color: #fbcfe8;
+  border-color: rgba(219, 39, 119, 0.18);
+}
+.pill-android {
+  background: rgba(132, 204, 22, 0.08);
+  color: #d9f99d;
+  border-color: rgba(132, 204, 22, 0.18);
+}
 .pill-linux {
   background: rgba(16, 185, 129, 0.07);
   color: #bbf7d0;
@@ -3365,28 +3403,37 @@ tbody tr:hover {
 /* OS / arch tones — applied to icon containers across all variants */
 .cv-tone-pill-win { color: #93c5fd; }
 .cv-tone-pill-mac { color: #f1f5f9; }
-.cv-tone-pill-ubuntu { color: #fdba74; }
-.cv-tone-pill-debian { color: #f9a8d4; }
-.cv-tone-pill-arch { color: #67e8f9; }
-.cv-tone-pill-kali { color: #7dd3fc; }
-.cv-tone-pill-fedora { color: #bfdbfe; }
-.cv-tone-pill-redhat { color: #fca5a5; }
-.cv-tone-pill-centos { color: #c4b5fd; }
-.cv-tone-pill-suse { color: #86efac; }
-.cv-tone-pill-raspi { color: #f9a8d4; }
-.cv-tone-pill-freebsd { color: #fca5a5; }
-.cv-tone-pill-alpine { color: #7dd3fc; }
-.cv-tone-pill-manjaro { color: #6ee7b7; }
-.cv-tone-pill-mint { color: #86efac; }
-.cv-tone-pill-linux { color: #86efac; }
+.cv-tone-pill-ubuntu { color: #e95420; }
+.cv-tone-pill-debian { color: #d70a53; }
+.cv-tone-pill-arch { color: #1793d1; }
+.cv-tone-pill-kali { color: #2777ff; }
+.cv-tone-pill-fedora { color: #51a2da; }
+.cv-tone-pill-redhat { color: #ee0000; }
+.cv-tone-pill-centos { color: #932279; }
+.cv-tone-pill-suse { color: #73ba25; }
+.cv-tone-pill-raspi { color: #c51a4a; }
+.cv-tone-pill-freebsd { color: #ab2b28; }
+.cv-tone-pill-alpine { color: #0d597f; }
+.cv-tone-pill-manjaro { color: #35bf5c; }
+.cv-tone-pill-mint { color: #87cf3e; }
+.cv-tone-pill-pop { color: #48b9c7; }
+.cv-tone-pill-nixos { color: #5277c3; }
+.cv-tone-pill-gentoo { color: #54487a; }
+.cv-tone-pill-rocky { color: #10b981; }
+.cv-tone-pill-alma { color: #0ea5e9; }
+.cv-tone-pill-android { color: #a4c639; }
+.cv-tone-pill-linux { color: #facc15; }
 .cv-tone-pill-x64 { color: #5eead4; }
 .cv-tone-pill-arm { color: #7dd3fc; }
 .cv-tone-pill-ghost,
 .cv-tone-pill-unknown { color: var(--cv-text-mute); }
 .cv-os, .cv-arch { display: inline-flex; align-items: center; gap: 4px; }
-.cv-os i { font-size: 11px; }
-.cv-os .cv-os-icon,
-.cv-card-meta-bit .cv-os-icon {
+.cv-os i,
+.cv-card-meta-bit i.fa-brands {
+  color: currentColor;
+  font-size: 12px;
+}
+.cv-os-icon {
   position: relative;
   display: inline-flex;
   align-items: center;
@@ -3398,15 +3445,14 @@ tbody tr:hover {
   font-size: 0;
   line-height: 1;
 }
-.cv-os .cv-os-icon::before,
-.cv-card-meta-bit .cv-os-icon::before {
+.cv-os-icon::before {
   content: "";
   display: block;
 }
 .cv-os-icon-arch::before {
   width: 12px;
   height: 12px;
-  background: #67e8f9;
+  background: currentColor;
   clip-path: polygon(50% 3%, 95% 96%, 70% 82%, 61% 62%, 50% 39%, 39% 62%, 30% 82%, 5% 96%);
 }
 .cv-os-icon-mint::before {
@@ -3426,6 +3472,93 @@ tbody tr:hover {
   line-height: 1;
   color: #86efac;
   letter-spacing: 0;
+}
+.cv-os-icon-manjaro::before {
+  width: 13px;
+  height: 13px;
+  border-radius: 2px;
+  background:
+    linear-gradient(currentColor 0 0) 0 0 / 4px 13px no-repeat,
+    linear-gradient(currentColor 0 0) 5px 0 / 8px 4px no-repeat,
+    linear-gradient(currentColor 0 0) 5px 5px / 4px 8px no-repeat,
+    linear-gradient(currentColor 0 0) 10px 5px / 3px 8px no-repeat;
+}
+.cv-os-icon-kali::before {
+  width: 13px;
+  height: 13px;
+  border-radius: 2px;
+  background: currentColor;
+  clip-path: polygon(8% 14%, 92% 14%, 58% 40%, 86% 86%, 66% 86%, 48% 55%, 33% 66%, 33% 86%, 8% 86%);
+}
+.cv-os-icon-alpine::before {
+  width: 13px;
+  height: 13px;
+  border-radius: 2px;
+  background:
+    linear-gradient(135deg, transparent 50%, rgba(255, 255, 255, 0.55) 0) 1px 7px / 5px 5px no-repeat,
+    linear-gradient(135deg, transparent 48%, currentColor 0) 0 3px / 13px 10px no-repeat;
+}
+.cv-os-icon-pop::before {
+  width: 13px;
+  height: 13px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 3px rgba(72, 185, 199, 0.16);
+}
+.cv-os-icon-pop::after {
+  content: "";
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  right: 1px;
+  bottom: 1px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.cv-os-icon-nixos::before,
+.cv-os-icon-nixos::after {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 13px;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+  box-shadow: 0 0 0 1px rgba(82, 119, 195, 0.08);
+}
+.cv-os-icon-nixos::before {
+  transform: translateY(-50%) rotate(30deg);
+}
+.cv-os-icon-nixos::after {
+  content: "";
+  transform: translateY(-50%) rotate(-30deg);
+}
+.cv-os-icon-gentoo::before {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-left-color: transparent;
+  transform: rotate(-20deg);
+}
+.cv-os-icon-rocky::before {
+  width: 13px;
+  height: 13px;
+  border-radius: 3px;
+  background:
+    linear-gradient(135deg, transparent 45%, currentColor 0 62%, transparent 0),
+    linear-gradient(45deg, transparent 42%, currentColor 0 63%, transparent 0),
+    linear-gradient(currentColor 0 0) center / 5px 5px no-repeat;
+}
+.cv-os-icon-alma::before {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #0ea5e9;
+  box-shadow:
+    6px 0 0 #22c55e,
+    3px 5px 0 #f97316,
+    0 0 0 1px rgba(255, 255, 255, 0.12);
 }
 
 /* Arch chip in table variant */
