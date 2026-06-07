@@ -432,3 +432,29 @@ func TestCaptureAndSend_CancelledContext(t *testing.T) {
 	// SHOULD handle gracefully, may or may not send depending on timing :sob:
 	_ = CaptureAndSend(ctx, env)
 }
+
+func TestSetFrameFlowTargetFPSScalesHighFPS(t *testing.T) {
+	t.Setenv("OVERLORD_DESKTOP_IN_FLIGHT_FRAMES", "")
+	ResetFrameSlots()
+	SetFrameFlowTargetFPS(60)
+	if got := activeFrameSlotLimit(); got != 2 {
+		t.Fatalf("expected 60 fps slot limit 2, got %d", got)
+	}
+	SetFrameFlowTargetFPS(120)
+	if got := activeFrameSlotLimit(); got != 4 {
+		t.Fatalf("expected 120 fps slot limit 4, got %d", got)
+	}
+	SetFrameFlowTargetFPS(240)
+	if got := activeFrameSlotLimit(); got != 8 {
+		t.Fatalf("expected 240 fps slot limit 8, got %d", got)
+	}
+}
+
+func TestSetFrameFlowTargetFPSEnvOverride(t *testing.T) {
+	t.Setenv("OVERLORD_DESKTOP_IN_FLIGHT_FRAMES", "12")
+	ResetFrameSlots()
+	SetFrameFlowTargetFPS(240)
+	if got := activeFrameSlotLimit(); got != 12 {
+		t.Fatalf("expected env slot limit 12, got %d", got)
+	}
+}

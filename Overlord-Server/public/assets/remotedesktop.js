@@ -788,6 +788,7 @@ import { createKeyboardCapture } from "./keyboard-capture.js";
         pushInputToggles();
         pushCaptureToggles();
         if (qualitySlider) pushQuality(qualitySlider.value);
+        pushTargetFps();
         pushResolution();
       } else {
         setStreamState("idle", "Stopped");
