@@ -1,27 +1,39 @@
 name: overlord-ci
 
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: 'Release version to publish, for example 1.2.3'
+        required: true
+        type: string
 
 env:
   REGISTRY: ghcr.io
+  RELEASE_VERSION: ${{ inputs.release_version }}
 
 permissions:
   contents: read
 
 jobs:
+  approve-release:
+    runs-on: ubuntu-latest
+    environment: overlord-ci
+    steps:
+      - name: Confirm release approval
+        run: echo "Approved release ${RELEASE_VERSION}"
+
   build-backstage-dll:
+    needs: approve-release
     runs-on: windows-latest
     permissions:
       contents: read
     steps:
-      - name: Validate Release Tag
+      - name: Validate Release Version
         shell: pwsh
         run: |
-          if ($env:GITHUB_REF_NAME -notmatch '^v\d+\.\d+\.\d+$') {
-            throw "Ref must be a strict release tag like v1.2.3; got '$env:GITHUB_REF_NAME'"
+          if ($env:RELEASE_VERSION -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Release version must be strict semver like 1.2.3; got '$env:RELEASE_VERSION'"
           }
 
       - name: Checkout repository
@@ -93,18 +105,17 @@ jobs:
           echo "major=$major" >> "$GITHUB_OUTPUT"
           echo "minor=$minor" >> "$GITHUB_OUTPUT"
 
-      - name: Validate Tag Matches Source Version
+      - name: Validate Release Version Matches Source Version
         shell: bash
         run: |
           set -euo pipefail
-          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Ref must be a strict release tag like v1.2.3; got ${GITHUB_REF_NAME}" >&2
+          if [[ ! "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release version must be strict semver like 1.2.3; got ${RELEASE_VERSION}" >&2
             exit 1
           fi
-          tag_version="${GITHUB_REF_NAME#v}"
           src_version="${{ steps.srcver.outputs.version }}"
-          if [[ "$tag_version" != "$src_version" ]]; then
-            echo "Tag version ($tag_version) does not match source version ($src_version)" >&2
+          if [[ "$RELEASE_VERSION" != "$src_version" ]]; then
+            echo "Release version ($RELEASE_VERSION) does not match source version ($src_version)" >&2
             exit 1
           fi
 
