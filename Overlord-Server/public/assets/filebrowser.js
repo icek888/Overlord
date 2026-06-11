@@ -2635,10 +2635,10 @@ async function uploadFileViaHttpPull(file, path, transfer) {
   let waitResult;
   if (uploadData.agentNotified && typeof uploadData.agentCommandId === "string") {
     commandId = uploadData.agentCommandId;
-    waitResult = waitForCommandResult(commandId, 12 * 60 * 1000);
+    waitResult = waitForCommandResult(commandId, HTTP_UPLOAD_AGENT_TIMEOUT_MS);
   } else {
     commandId = `upload-http-${Date.now()}-${Math.random()}`;
-    waitResult = waitForCommandResult(commandId, 12 * 60 * 1000);
+    waitResult = waitForCommandResult(commandId, HTTP_UPLOAD_AGENT_TIMEOUT_MS);
     send({
       type: "command",
       commandType: "file_upload_http",
@@ -2670,6 +2670,7 @@ const WS_UPLOAD_MAX_TOTAL = 8 * 1024 * 1024;
 const WS_UPLOAD_CHUNK_SIZE = 512 * 1024;
 const WS_UPLOAD_CONCURRENCY = 4;
 const WS_UPLOAD_ACK_TIMEOUT_MS = 90 * 1000;
+const HTTP_UPLOAD_AGENT_TIMEOUT_MS = 30 * 60 * 1000;
 const PREFER_HTTP_UPLOAD_PULL = true;
 
 async function uploadFileViaWsChunks(file, path, transfer) {

@@ -403,40 +403,7 @@ export async function handleFileDownloadRoutes(
     uploadIntents.delete(uploadId);
     clearTimeout(intent.timeout);
 
-    let agentCommandId: string | null = null;
-    if (canStream) {
-      const target = clientManager.getClient(intent.clientId);
-      if (target) {
-        agentCommandId = uuidv4();
-        try {
-          target.ws.send(
-            encodeMessage({
-              type: "command",
-              commandType: "file_upload_http",
-              id: agentCommandId,
-              payload: {
-                path: intent.path,
-                url: `${url.origin}/api/file/upload/pull/${encodeURIComponent(pullId)}`,
-                total: expectedTotal,
-              },
-            } as any),
-          );
-          logger.debug("[filebrowser] http upload eagerly notified agent", {
-            uploadId,
-            pullId,
-            clientId: intent.clientId,
-            total: expectedTotal,
-            commandId: agentCommandId,
-          });
-        } catch (err) {
-          logger.debug("[filebrowser] http upload eager notify failed", {
-            uploadId,
-            error: (err as Error)?.message || String(err),
-          });
-          agentCommandId = null;
-        }
-      }
-    }
+    const pullUrl = `/api/file/upload/pull/${encodeURIComponent(pullId)}`;
 
     let stagedSize = 0;
     const fileHandle = await fs.open(tmpPath, "w");
@@ -505,9 +472,9 @@ export async function handleFileDownloadRoutes(
       ok: true,
       size: stagedSize,
       path: intent.path,
-      pullUrl: `${url.origin}/api/file/upload/pull/${encodeURIComponent(pullId)}`,
-      agentCommandId,
-      agentNotified: !!agentCommandId,
+      pullUrl,
+      agentCommandId: null,
+      agentNotified: false,
     });
   }
 

@@ -742,7 +742,12 @@ const (
 )
 
 func HandleFileUploadHTTP(ctx context.Context, env *agentRuntime.Env, cmdID string, destPath string, sourceURL string, expectedSize int64) error {
-	parsed, err := url.Parse(strings.TrimSpace(sourceURL))
+	resolvedURL, err := resolveUploadPullURL(env, sourceURL)
+	if err != nil {
+		return wire.WriteMsg(ctx, env.Conn, wire.CommandResult{Type: "command_result", CommandID: cmdID, OK: false, Message: err.Error()})
+	}
+
+	parsed, err := url.Parse(resolvedURL)
 	if err != nil || parsed == nil || parsed.Host == "" {
 		return wire.WriteMsg(ctx, env.Conn, wire.CommandResult{Type: "command_result", CommandID: cmdID, OK: false, Message: "invalid upload url"})
 	}
@@ -949,6 +954,64 @@ func nextBackoff(d time.Duration) time.Duration {
 		return httpUploadMaxBackoff
 	}
 	return next
+}
+
+func resolveUploadPullURL(env *agentRuntime.Env, raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", errors.New("missing upload url")
+	}
+
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return "", fmt.Errorf("invalid upload url: %w", err)
+	}
+
+	if parsed.IsAbs() {
+		scheme := strings.ToLower(parsed.Scheme)
+		if scheme != "http" && scheme != "https" {
+			return "", fmt.Errorf("unsupported upload url scheme: %s", parsed.Scheme)
+		}
+		if !strings.HasPrefix(parsed.Path, "/api/file/upload/pull/") {
+			return parsed.String(), nil
+		}
+	}
+
+	if len(env.Cfg.ServerURLs) == 0 {
+		if parsed.IsAbs() {
+			return parsed.String(), nil
+		}
+		return "", errors.New("no server url configured for upload pull")
+	}
+
+	idx := env.Cfg.ServerIndex
+	if idx < 0 || idx >= len(env.Cfg.ServerURLs) {
+		idx = 0
+	}
+	server, err := url.Parse(env.Cfg.ServerURLs[idx])
+	if err != nil {
+		return "", fmt.Errorf("invalid agent server url: %w", err)
+	}
+	switch strings.ToLower(server.Scheme) {
+	case "wss":
+		server.Scheme = "https"
+	case "ws":
+		server.Scheme = "http"
+	case "https", "http":
+	default:
+		return "", fmt.Errorf("unsupported agent server scheme: %s", server.Scheme)
+	}
+
+	if parsed.Path == "" {
+		return "", errors.New("missing upload pull path")
+	}
+	if !strings.HasPrefix(parsed.Path, "/") {
+		parsed.Path = "/" + parsed.Path
+	}
+	server.Path = parsed.Path
+	server.RawQuery = parsed.RawQuery
+	server.Fragment = ""
+	return server.String(), nil
 }
 
 func HandleFileDelete(ctx context.Context, env *agentRuntime.Env, cmdID string, path string) error {

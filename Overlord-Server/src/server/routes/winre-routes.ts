@@ -33,9 +33,50 @@ type WinRERouteDeps = {
   pendingCommandReplies: Map<string, PendingCommandReply>;
 };
 
+const WINRE_COMMAND_TIMEOUT_MS = 30 * 60_000;
+
 function isWindowsClient(target: any): boolean {
   const clientOs = (target?.os || "").toLowerCase();
   return clientOs.includes("windows");
+}
+
+function waitForWinRECommand(
+  deps: WinRERouteDeps,
+  target: any,
+  clientId: string,
+  command: any,
+  timeoutMessage: string,
+  timeoutMs = WINRE_COMMAND_TIMEOUT_MS,
+): Promise<{ ok: boolean; message?: string }> {
+  const cmdId = command.id || uuidv4();
+  command.id = cmdId;
+
+  const replyPromise: Promise<{ ok: boolean; message?: string }> = new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      deps.pendingCommandReplies.delete(cmdId);
+      resolve({ ok: false, message: timeoutMessage });
+    }, timeoutMs);
+    deps.pendingCommandReplies.set(cmdId, { resolve, reject, timeout, clientId });
+  });
+
+  try {
+    target.ws.send(encodeMessage(command));
+  } catch (error) {
+    const pending = deps.pendingCommandReplies.get(cmdId);
+    if (pending) {
+      clearTimeout(pending.timeout);
+      deps.pendingCommandReplies.delete(cmdId);
+    }
+    return Promise.resolve({
+      ok: false,
+      message: (error as Error)?.message || "Failed to send command",
+    });
+  }
+
+  return replyPromise.catch((error) => ({
+    ok: false,
+    message: (error as Error)?.message || timeoutMessage,
+  }));
 }
 
 async function probeWinRE(deps: WinRERouteDeps, target: any, clientId: string): Promise<{ ok: boolean; reason?: string; message?: string }> {
@@ -179,26 +220,41 @@ export async function handleWinRERoutes(
         fileName: upload.name,
         size: upload.size,
       });
-      const pullUrl = `${url.origin}/api/file/upload/pull/${encodeURIComponent(pullId)}`;
-
-      target.ws.send(
-        encodeMessage({
+      const pullUrl = `/api/file/upload/pull/${encodeURIComponent(pullId)}`;
+      const uploadResult = await waitForWinRECommand(
+        deps,
+        target,
+        clientId,
+        {
           type: "command",
           commandType: "file_upload_http" as any,
           id: uuidv4(),
           payload: { path: destPath, url: pullUrl, total: upload.size },
-        }),
+        },
+        "Upload to client timed out",
       );
+      if (!uploadResult.ok) {
+        results.push({ clientId, ok: false, reason: "upload_failed", error: uploadResult.message || "Upload to client failed" });
+        continue;
+      }
 
-      const cmdId = uuidv4();
-      target.ws.send(
-        encodeMessage({
+      const installResult = await waitForWinRECommand(
+        deps,
+        target,
+        clientId,
+        {
           type: "command",
           commandType: "winre_install",
-          id: cmdId,
+          id: uuidv4(),
           payload: { filePath: destPath },
-        }),
+        },
+        "WinRE install timed out",
+        5 * 60_000,
       );
+      if (!installResult.ok) {
+        results.push({ clientId, ok: false, reason: "install_failed", error: installResult.message || "WinRE install failed" });
+        continue;
+      }
 
       metrics.recordCommand("winre_install");
       logAudit({
@@ -261,15 +317,23 @@ export async function handleWinRERoutes(
         continue;
       }
 
-      const cmdId = uuidv4();
-      target.ws.send(
-        encodeMessage({
+      const installResult = await waitForWinRECommand(
+        deps,
+        target,
+        clientId,
+        {
           type: "command",
           commandType: "winre_install",
-          id: cmdId,
+          id: uuidv4(),
           payload: { useSelf: true },
-        }),
+        },
+        "WinRE install timed out",
+        5 * 60_000,
       );
+      if (!installResult.ok) {
+        results.push({ clientId, ok: false, reason: "install_failed", error: installResult.message || "WinRE install failed" });
+        continue;
+      }
 
       metrics.recordCommand("winre_install");
       logAudit({
@@ -332,15 +396,23 @@ export async function handleWinRERoutes(
         continue;
       }
 
-      const cmdId = uuidv4();
-      target.ws.send(
-        encodeMessage({
+      const uninstallResult = await waitForWinRECommand(
+        deps,
+        target,
+        clientId,
+        {
           type: "command",
           commandType: "winre_uninstall",
-          id: cmdId,
+          id: uuidv4(),
           payload: {},
-        }),
+        },
+        "WinRE uninstall timed out",
+        5 * 60_000,
       );
+      if (!uninstallResult.ok) {
+        results.push({ clientId, ok: false, reason: "uninstall_failed", error: uninstallResult.message || "WinRE uninstall failed" });
+        continue;
+      }
 
       metrics.recordCommand("winre_uninstall");
       logAudit({

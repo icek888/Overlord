@@ -446,6 +446,7 @@ db.run(`
     hide_window INTEGER NOT NULL DEFAULT 1,
     enabled INTEGER NOT NULL,
     os_filter TEXT NOT NULL DEFAULT '[]',
+    created_by_user_id INTEGER,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
   );
@@ -453,6 +454,15 @@ db.run(`
 db.run(
   `CREATE INDEX IF NOT EXISTS idx_auto_deploys_trigger ON auto_deploys(trigger, enabled);`,
 );
+try {
+  const columns = db.query<{ name: string }>(`PRAGMA table_info(auto_deploys)`).all();
+  if (!columns.some((column) => column.name === "created_by_user_id")) {
+    db.run(`ALTER TABLE auto_deploys ADD COLUMN created_by_user_id INTEGER`);
+  }
+  db.run(
+    `CREATE INDEX IF NOT EXISTS idx_auto_deploys_created_by_user_id ON auto_deploys(created_by_user_id);`,
+  );
+} catch { /* legacy migration will retry on next startup */ }
 
 db.run(`
   CREATE TABLE IF NOT EXISTS auto_deploy_runs (

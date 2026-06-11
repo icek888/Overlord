@@ -498,7 +498,7 @@ executeBtn.addEventListener("click", async () => {
     if (r.ok === false) {
       return { clientName, clientId: r.clientId, error: r.reason || "Dispatch failed" };
     }
-    return { clientName, clientId: r.clientId, output: "Queued", command: r.command };
+    return { clientName, clientId: r.clientId, output: "Uploaded and execution started", command: r.command };
   });
 
   outputContainer.innerHTML = namedResults

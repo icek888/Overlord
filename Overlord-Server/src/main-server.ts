@@ -499,6 +499,7 @@ async function startServer() {
     deploy: {
       DEPLOY_ROOT,
       deployUploads,
+      pendingCommandReplies,
       detectUploadOs,
       normalizeClientOs,
     },
@@ -621,9 +622,7 @@ async function startServer() {
     handleDesktopAudioViewerMessage,
     dispatchAutoScriptsForConnection,
     dispatchAutoDeploysForConnection: (info: import("./types").ClientInfo, ws: import("bun").ServerWebSocket<SocketData>) => {
-      const proto = tls ? "https" : "http";
-      const origin = `${proto}://127.0.0.1:${PORT}`;
-      dispatchAutoDeploysForConnection(info, ws, origin);
+      dispatchAutoDeploysForConnection(info, ws, { pendingCommandReplies });
     },
     dispatchAutoLoadPlugins: (info: import("./types").ClientInfo) => {
       dispatchAutoLoadPlugins(

@@ -2250,6 +2250,7 @@ export type AutoDeploy = {
   hideWindow: boolean;
   enabled: boolean;
   osFilter: string[];
+  createdByUserId: number | null;
   createdAt: number;
   updatedAt: number;
 };
@@ -2272,6 +2273,7 @@ function mapAutoDeployRow(row: any): AutoDeploy {
     hideWindow: row.hide_window === 1,
     enabled: row.enabled === 1,
     osFilter,
+    createdByUserId: row.created_by_user_id == null ? null : Number(row.created_by_user_id),
     createdAt: Number(row.created_at) || 0,
     updatedAt: Number(row.updated_at) || 0,
   };
@@ -2279,6 +2281,14 @@ function mapAutoDeployRow(row: any): AutoDeploy {
 
 export function listAutoDeploys(): AutoDeploy[] {
   const rows = db.query<any>(`SELECT * FROM auto_deploys ORDER BY created_at DESC`).all();
+  return rows.map(mapAutoDeployRow);
+}
+
+export function listAutoDeploysForUser(userId: number, role: string): AutoDeploy[] {
+  if (role === "admin") return listAutoDeploys();
+  const rows = db
+    .query<any>(`SELECT * FROM auto_deploys WHERE created_by_user_id=? ORDER BY created_at DESC`)
+    .all(userId);
   return rows.map(mapAutoDeployRow);
 }
 
@@ -2296,6 +2306,14 @@ export function getAutoDeploy(id: string): AutoDeploy | null {
   return row ? mapAutoDeployRow(row) : null;
 }
 
+export function canUserManageAutoDeploy(userId: number, role: string, deployId: string): boolean {
+  if (role === "admin") return true;
+  const row = db
+    .query<{ created_by_user_id: number | null }>(`SELECT created_by_user_id FROM auto_deploys WHERE id=?`)
+    .get(deployId);
+  return row?.created_by_user_id != null && Number(row.created_by_user_id) === userId;
+}
+
 export function createAutoDeploy(input: {
   id: string;
   name: string;
@@ -2308,11 +2326,12 @@ export function createAutoDeploy(input: {
   hideWindow: boolean;
   enabled: boolean;
   osFilter: string[];
+  createdByUserId: number;
 }): AutoDeploy {
   const now = Date.now();
   db.run(
-    `INSERT INTO auto_deploys (id, name, trigger, file_path, file_name, file_size, file_os, args, hide_window, enabled, os_filter, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO auto_deploys (id, name, trigger, file_path, file_name, file_size, file_os, args, hide_window, enabled, os_filter, created_by_user_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     input.id,
     input.name,
     input.trigger,
@@ -2324,6 +2343,7 @@ export function createAutoDeploy(input: {
     input.hideWindow ? 1 : 0,
     input.enabled ? 1 : 0,
     JSON.stringify(input.osFilter ?? []),
+    input.createdByUserId,
     now,
     now,
   );

@@ -2,10 +2,11 @@ import fs from "fs/promises";
 import path from "path";
 import { authenticateRequest } from "../../auth";
 import {
+  canUserManageAutoDeploy,
   createAutoDeploy,
   deleteAutoDeploy,
   getAutoDeploy,
-  listAutoDeploys,
+  listAutoDeploysForUser,
   updateAutoDeploy,
   type AutoDeployTrigger,
 } from "../../db";
@@ -34,13 +35,13 @@ export async function handleAutoDeployRoutes(
       });
     }
     try {
-      requirePermission(user, "clients:control");
+      requirePermission(user, "deploys:manage");
     } catch (error) {
       if (error instanceof Response) return error;
       return new Response("Forbidden", { status: 403 });
     }
 
-    return Response.json({ items: listAutoDeploys() });
+    return Response.json({ items: listAutoDeploysForUser(user.userId, user.role) });
   }
 
   if (req.method === "POST" && url.pathname === "/api/auto-deploys") {
@@ -113,6 +114,7 @@ export async function handleAutoDeployRoutes(
       hideWindow,
       enabled,
       osFilter,
+      createdByUserId: user.userId,
     });
 
     return Response.json({ ok: true, item });
@@ -151,7 +153,12 @@ export async function handleAutoDeployRoutes(
       ? osFilterRaw.filter((v: unknown) => typeof v === "string" && ALLOWED_OS_FILTERS.has(v as string))
       : undefined;
 
-    const updated = updateAutoDeploy(autoDeployMatch[1], {
+    const deployId = autoDeployMatch[1];
+    if (!canUserManageAutoDeploy(user.userId, user.role, deployId)) {
+      return Response.json({ error: "Not found" }, { status: 404 });
+    }
+
+    const updated = updateAutoDeploy(deployId, {
       name: body?.name ? String(body.name).trim() : undefined,
       trigger: triggerRaw as AutoDeployTrigger | undefined,
       args: typeof body?.args === "string" ? body.args : undefined,
@@ -182,7 +189,12 @@ export async function handleAutoDeployRoutes(
       return new Response("Forbidden", { status: 403 });
     }
 
-    const deploy = getAutoDeploy(autoDeployMatch[1]);
+    const deployId = autoDeployMatch[1];
+    if (!canUserManageAutoDeploy(user.userId, user.role, deployId)) {
+      return Response.json({ error: "Not found" }, { status: 404 });
+    }
+
+    const deploy = getAutoDeploy(deployId);
     if (deploy) {
       try {
         const dir = path.dirname(deploy.filePath);
@@ -190,7 +202,7 @@ export async function handleAutoDeployRoutes(
       } catch { }
     }
 
-    deleteAutoDeploy(autoDeployMatch[1]);
+    deleteAutoDeploy(deployId);
     return Response.json({ ok: true });
   }
 

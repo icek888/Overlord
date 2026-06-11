@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"overlord-client/cmd/agent/config"
@@ -500,6 +501,61 @@ func TestHandleFileUploadHTTP(t *testing.T) {
 
 	if err := HandleFileUploadHTTP(context.Background(), env, "cmd-http-upload", destPath, ts.URL+"/file", int64(len(data))); err != nil {
 		t.Fatalf("HandleFileUploadHTTP failed: %v", err)
+	}
+
+	content, err := os.ReadFile(destPath)
+	if err != nil {
+		t.Fatalf("failed reading uploaded file: %v", err)
+	}
+	if !bytes.Equal(content, data) {
+		t.Fatalf("uploaded content mismatch")
+	}
+
+	if len(writer.msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(writer.msgs))
+	}
+	var result wire.CommandResult
+	if err := msgpack.Unmarshal(writer.msgs[0], &result); err != nil {
+		t.Fatalf("failed to unmarshal command result: %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("expected OK=true, got false: %s", result.Message)
+	}
+}
+
+func TestHandleFileUploadHTTP_RewritesUploadPullURLToAgentServer(t *testing.T) {
+	data := []byte("wan-origin-upload-payload")
+	var gotHost string
+	var gotPath string
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost = r.Host
+		gotPath = r.URL.RequestURI()
+		if gotPath != "/api/file/upload/pull/test-id?token=abc" {
+			t.Fatalf("expected rewritten upload pull path, got %q", gotPath)
+		}
+		_, _ = w.Write(data)
+	}))
+	defer ts.Close()
+
+	tmpDir := t.TempDir()
+	destPath := filepath.Join(tmpDir, "uploaded-http-rewritten.bin")
+
+	writer := &testWriter{}
+	env := &rt.Env{
+		Conn: writer,
+		Cfg: config.Config{
+			ServerURLs: []string{strings.Replace(ts.URL, "http://", "ws://", 1)},
+		},
+	}
+
+	publicOriginURL := "https://public.example.invalid/api/file/upload/pull/test-id?token=abc"
+	if err := HandleFileUploadHTTP(context.Background(), env, "cmd-http-upload-rewrite", destPath, publicOriginURL, int64(len(data))); err != nil {
+		t.Fatalf("HandleFileUploadHTTP failed: %v", err)
+	}
+
+	if gotHost == "" || strings.Contains(gotHost, "public.example.invalid") {
+		t.Fatalf("expected request to active agent server, got host %q", gotHost)
 	}
 
 	content, err := os.ReadFile(destPath)

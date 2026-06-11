@@ -124,8 +124,11 @@ describe("file upload route flow", () => {
       expect(stageJson.ok).toBe(true);
       expect(stageJson.size).toBe(payload.length);
       expect(typeof stageJson.pullUrl).toBe("string");
+      expect(stageJson.pullUrl.startsWith("/api/file/upload/pull/")).toBe(true);
+      expect(stageJson.agentNotified).toBe(false);
+      expect(stageJson.agentCommandId).toBeNull();
 
-      const pullUrl = new URL(stageJson.pullUrl);
+      const pullUrl = new URL(stageJson.pullUrl, "https://localhost");
       const pullRes = await handleFileDownloadRoutes(
         new Request(pullUrl, {
           method: "GET",
@@ -228,7 +231,7 @@ describe("file upload route flow", () => {
       );
       const stageJson = await stageRes!.json() as any;
 
-      const pullUrl = new URL(stageJson.pullUrl);
+      const pullUrl = new URL(stageJson.pullUrl, "https://localhost");
       const badPullRes = await handleFileDownloadRoutes(
         new Request(pullUrl, {
           method: "GET",
@@ -309,7 +312,7 @@ describe("file upload route flow", () => {
         deps,
       );
       const stageJson = await stageRes!.json() as any;
-      const pullUrl = new URL(stageJson.pullUrl);
+      const pullUrl = new URL(stageJson.pullUrl, "https://localhost");
 
       const firstPullRes = await handleFileDownloadRoutes(
         new Request(pullUrl, {

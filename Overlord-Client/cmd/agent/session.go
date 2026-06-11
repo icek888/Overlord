@@ -119,8 +119,11 @@ func runClient(cfg config.Config) {
 
 		conn.SetReadLimit(8 * 1024 * 1024)
 
+		sessionCfg := cfg
+		sessionCfg.ServerIndex = currentIndex
+
 		var sessionErr error
-		if err := runSession(ctx, cancel, conn, cfg); err != nil {
+		if err := runSession(ctx, cancel, conn, sessionCfg); err != nil {
 			sessionErr = err
 			log.Printf("session ended: %v (retrying in %s)", err, backoff)
 			lastDisconnect = time.Now()

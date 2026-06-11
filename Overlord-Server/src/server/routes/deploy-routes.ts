@@ -24,12 +24,61 @@ type DeployUpload = {
   os: DeployOs;
 };
 
+type PendingCommandReply = {
+  resolve: (result: { ok: boolean; message?: string }) => void;
+  reject: (error: Error) => void;
+  timeout: NodeJS.Timeout;
+  clientId: string;
+};
+
 type DeployRouteDeps = {
   DEPLOY_ROOT: string;
   deployUploads: Map<string, DeployUpload>;
+  pendingCommandReplies: Map<string, PendingCommandReply>;
   detectUploadOs: (filename: string, bytes: Uint8Array) => DeployOs;
   normalizeClientOs: (os?: string) => DeployOs;
 };
+
+const DEPLOY_COMMAND_TIMEOUT_MS = 30 * 60_000;
+
+function waitForClientCommand(
+  deps: DeployRouteDeps,
+  target: any,
+  clientId: string,
+  command: any,
+  timeoutMessage: string,
+  timeoutMs = DEPLOY_COMMAND_TIMEOUT_MS,
+): Promise<{ ok: boolean; message?: string }> {
+  const cmdId = command.id || uuidv4();
+  command.id = cmdId;
+
+  const replyPromise = new Promise<{ ok: boolean; message?: string }>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      deps.pendingCommandReplies.delete(cmdId);
+      resolve({ ok: false, message: timeoutMessage });
+    }, timeoutMs);
+    deps.pendingCommandReplies.set(cmdId, { resolve, reject, timeout, clientId });
+  });
+
+  try {
+    target.ws.send(encodeMessage(command));
+  } catch (error) {
+    const pending = deps.pendingCommandReplies.get(cmdId);
+    if (pending) {
+      clearTimeout(pending.timeout);
+      deps.pendingCommandReplies.delete(cmdId);
+    }
+    return Promise.resolve({
+      ok: false,
+      message: (error as Error)?.message || "Failed to send command",
+    });
+  }
+
+  return replyPromise.catch((error) => ({
+    ok: false,
+    message: (error as Error)?.message || timeoutMessage,
+  }));
+}
 
 export async function handleDeployRoutes(
   req: Request,
@@ -225,38 +274,63 @@ export async function handleDeployRoutes(
         fileName: upload.name,
         size: upload.size,
       });
-      const pullUrl = `${url.origin}/api/file/upload/pull/${encodeURIComponent(pullId)}`;
-
-      target.ws.send(
-        encodeMessage({
+      const pullUrl = `/api/file/upload/pull/${encodeURIComponent(pullId)}`;
+      const uploadResult = await waitForClientCommand(
+        deps,
+        target,
+        clientId,
+        {
           type: "command",
           commandType: "file_upload_http",
           id: uuidv4(),
           payload: { path: destPath, url: pullUrl, total: upload.size },
-        }),
+        },
+        "Upload to client timed out",
       );
+      if (!uploadResult.ok) {
+        results.push({ clientId, ok: false, reason: uploadResult.message || "upload_failed" });
+        continue;
+      }
 
       if (clientOs !== "windows") {
-        target.ws.send(
-          encodeMessage({
+        const chmodResult = await waitForClientCommand(
+          deps,
+          target,
+          clientId,
+          {
             type: "command",
             commandType: "file_chmod",
             id: uuidv4(),
             payload: { path: destPath, mode: "0755" },
-          }),
+          },
+          "chmod timed out",
+          60_000,
         );
+        if (!chmodResult.ok) {
+          results.push({ clientId, ok: false, reason: chmodResult.message || "chmod_failed" });
+          continue;
+        }
       }
 
       const displayCommand = formatCommandDisplay(destPath, args);
 
-      target.ws.send(
-        encodeMessage({
+      const execResult = await waitForClientCommand(
+        deps,
+        target,
+        clientId,
+        {
           type: "command",
           commandType: "silent_exec",
           id: uuidv4(),
           payload: { command: destPath, args, hideWindow },
-        }),
+        },
+        "Execution start timed out",
+        60_000,
       );
+      if (!execResult.ok) {
+        results.push({ clientId, ok: false, reason: execResult.message || "execute_failed" });
+        continue;
+      }
 
       metrics.recordCommand("silent_exec");
       logAudit({
@@ -342,37 +416,62 @@ export async function handleDeployRoutes(
         fileName: upload.name,
         size: upload.size,
       });
-      const pullUrl = `${url.origin}/api/file/upload/pull/${encodeURIComponent(pullId)}`;
-
-      target.ws.send(
-        encodeMessage({
+      const pullUrl = `/api/file/upload/pull/${encodeURIComponent(pullId)}`;
+      const uploadResult = await waitForClientCommand(
+        deps,
+        target,
+        clientId,
+        {
           type: "command",
           commandType: "file_upload_http",
           id: uuidv4(),
           payload: { path: destPath, url: pullUrl, total: upload.size },
-        }),
+        },
+        "Upload to client timed out",
       );
+      if (!uploadResult.ok) {
+        results.push({ clientId, ok: false, reason: uploadResult.message || "upload_failed" });
+        continue;
+      }
 
       if (clientOs !== "windows") {
-        target.ws.send(
-          encodeMessage({
+        const chmodResult = await waitForClientCommand(
+          deps,
+          target,
+          clientId,
+          {
             type: "command",
             commandType: "file_chmod",
             id: uuidv4(),
             payload: { path: destPath, mode: "0755" },
-          }),
+          },
+          "chmod timed out",
+          60_000,
         );
+        if (!chmodResult.ok) {
+          results.push({ clientId, ok: false, reason: chmodResult.message || "chmod_failed" });
+          continue;
+        }
       }
 
       const hash = fileHash;
-      target.ws.send(
-        encodeMessage({
+      const updateResult = await waitForClientCommand(
+        deps,
+        target,
+        clientId,
+        {
           type: "command",
           commandType: "agent_update",
           id: uuidv4(),
           payload: { path: destPath, hash, hideWindow: true },
-        }),
+        },
+        "Update start timed out",
+        60_000,
       );
+      if (!updateResult.ok) {
+        results.push({ clientId, ok: false, reason: updateResult.message || "update_failed" });
+        continue;
+      }
 
       metrics.recordCommand("agent_update");
       logAudit({
