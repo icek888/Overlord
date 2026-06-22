@@ -25,6 +25,12 @@ export type WorkerInbound =
       caller: PluginRpcCaller;
     }
   | {
+      type: "build_hook";
+      id: string;
+      hook: string;
+      payload: unknown;
+    }
+  | {
       type: "shutdown";
     };
 
@@ -33,5 +39,7 @@ export type WorkerOutbound =
   | { type: "boot_error"; error: string }
   | { type: "rpc_reply"; id: string; ok: true; result: unknown }
   | { type: "rpc_reply"; id: string; ok: false; error: string }
+  | { type: "build_hook_reply"; id: string; ok: true; result: unknown }
+  | { type: "build_hook_reply"; id: string; ok: false; error: string }
   | { type: "broadcast"; channel: string; data: unknown }
   | { type: "log"; level: "debug" | "info" | "warn" | "error"; message: string };

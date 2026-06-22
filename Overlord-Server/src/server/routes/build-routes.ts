@@ -21,7 +21,7 @@ import { logger } from "../../logger";
 import { normalizeClientOs } from "../deploy-utils";
 import { canUserBuild, recordBuildStart, recordBuildEnd } from "../../build-rate-limit";
 import { getConfig } from "../../config";
-import { canUploadFiles } from "../../users";
+import { canUploadFiles, canUserAccessPlugin } from "../../users";
 import { addBuildToBanlist, removeBuildFromBanlist } from "../build-signing";
 import path from "path";
 import fs from "fs";
@@ -37,7 +37,92 @@ type BuildRouteDeps = {
   startBuildProcess: (buildId: string, config: any) => Promise<void>;
   sanitizeMutex: (value?: string) => string | undefined;
   allowedPlatforms: Set<string>;
+  listPluginManifests?: () => Promise<any[]>;
 };
+
+function getPathValue(source: any, dotted: string): any {
+  if (!source || !dotted) return undefined;
+  return dotted.split(".").reduce((cur, key) => (cur && typeof cur === "object" ? cur[key] : undefined), source);
+}
+
+function requirementMet(req: any, buildConfig: any, pluginSettings: any): boolean {
+  if (!req || typeof req !== "object") return true;
+  let value: any;
+  if (typeof req.field === "string") value = getPathValue(buildConfig, req.field);
+  else if (typeof req.pluginSetting === "string") value = getPathValue(pluginSettings, req.pluginSetting);
+  else if (Array.isArray(req.platforms)) {
+    const platforms = Array.isArray(buildConfig.platforms) ? buildConfig.platforms : [];
+    return req.platforms.some((p: any) => typeof p === "string" && platforms.includes(p));
+  } else {
+    return true;
+  }
+  if (req.truthy === true && !value) return false;
+  if (req.falsy === true && value) return false;
+  if (Object.prototype.hasOwnProperty.call(req, "equals") && value !== req.equals) return false;
+  if (Object.prototype.hasOwnProperty.call(req, "notEquals") && value === req.notEquals) return false;
+  if (Object.prototype.hasOwnProperty.call(req, "includes")) {
+    if (!Array.isArray(value) || !value.includes(req.includes)) return false;
+  }
+  return true;
+}
+
+function sanitizePluginBuildValue(setting: any, value: any): any {
+  const type = typeof setting?.type === "string" ? setting.type : "string";
+  if (value === undefined || value === null || value === "") {
+    return setting?.default !== undefined ? setting.default : undefined;
+  }
+  if (type === "boolean") return value === true || value === "true" || value === "1";
+  if (type === "number") {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return setting?.default !== undefined ? setting.default : undefined;
+    const min = typeof setting.min === "number" ? setting.min : -1_000_000_000;
+    const max = typeof setting.max === "number" ? setting.max : 1_000_000_000;
+    return Math.max(min, Math.min(max, n));
+  }
+  const str = String(value).slice(0, type === "textarea" ? 10_000 : 1_000);
+  if (type === "select" && Array.isArray(setting.options)) {
+    const allowed = new Set(setting.options.map((opt: any) => typeof opt === "string" ? opt : opt?.value).filter((v: any) => typeof v === "string"));
+    return allowed.has(str) ? str : setting.default;
+  }
+  return str;
+}
+
+async function sanitizeBuildPlugins(
+  raw: any,
+  deps: BuildRouteDeps,
+  user: any,
+  buildConfig: any,
+): Promise<{ value: Record<string, any>; error?: string }> {
+  if (!raw || typeof raw !== "object" || !deps.listPluginManifests) return { value: {} };
+  const manifests = await deps.listPluginManifests();
+  const byId = new Map(manifests.map((m) => [m.id, m]));
+  const value: Record<string, any> = {};
+  for (const [pluginId, rawPlugin] of Object.entries(raw)) {
+    if (!/^[A-Za-z0-9._-]{1,128}$/.test(pluginId)) continue;
+    const manifest = byId.get(pluginId);
+    if (!manifest?.build || !canUserAccessPlugin(user.userId, user.role, pluginId)) continue;
+    const rawRecord = rawPlugin && typeof rawPlugin === "object" ? rawPlugin as any : {};
+    const enabled = rawRecord.enabled !== false;
+    const settings: Record<string, any> = {};
+    for (const setting of Array.isArray(manifest.build.settings) ? manifest.build.settings : []) {
+      if (!setting || typeof setting.key !== "string") continue;
+      const sanitized = sanitizePluginBuildValue(setting, rawRecord.settings?.[setting.key]);
+      if (enabled && setting.required && (sanitized === undefined || sanitized === "")) {
+        return { value: {}, error: `Build plugin ${manifest.name || pluginId} requires ${setting.label || setting.key}` };
+      }
+      if (sanitized !== undefined) settings[setting.key] = sanitized;
+    }
+    value[pluginId] = { enabled, settings };
+    if (enabled) {
+      for (const req of Array.isArray(manifest.build.requires) ? manifest.build.requires : []) {
+        if (!requirementMet(req, buildConfig, settings)) {
+          return { value: {}, error: req.message || `Build plugin ${manifest.name || pluginId} requirements are not met` };
+        }
+      }
+    }
+  }
+  return { value };
+}
 
 export async function handleBuildRoutes(
   req: Request,
@@ -120,6 +205,7 @@ export async function handleBuildRoutes(
         outputSgnTxt,
         fetchPublicIP,
         uploadToFileShare,
+        buildPlugins,
       } = body;
 
       if (!platforms || !Array.isArray(platforms) || platforms.length === 0) {
@@ -377,7 +463,7 @@ export async function handleBuildRoutes(
       const rateLimitActive = getConfig().registration.mode !== "off";
       if (rateLimitActive) recordBuildStart(user.userId);
 
-      deps.startBuildProcess(buildId, {
+      const safeBuildConfig: any = {
         platforms: allowedPlatforms,
         serverUrl: safeServerUrl,
         rawServerList: safeRawServerList,
@@ -424,11 +510,40 @@ export async function handleBuildRoutes(
         outputSgnTxt: safeOutputSgnTxt,
         fetchPublicIP: !!fetchPublicIP,
         uploadToFileShare: safeUploadToFileShare,
-      }).finally(() => {
+      };
+
+      const pluginBuildResult = await sanitizeBuildPlugins(buildPlugins, deps, user, safeBuildConfig);
+      if (pluginBuildResult.error) {
+        if (rateLimitActive) recordBuildEnd(user.userId);
+        return Response.json({ error: pluginBuildResult.error }, { status: 400 });
+      }
+      safeBuildConfig.buildPlugins = pluginBuildResult.value;
+
+      deps.startBuildProcess(buildId, safeBuildConfig).finally(() => {
         if (rateLimitActive) recordBuildEnd(user.userId);
       });
 
       return Response.json({ buildId });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/build/plugins") {
+      requirePermission(user, "clients:build");
+      if (!deps.listPluginManifests) {
+        return Response.json({ plugins: [] });
+      }
+      const manifests = await deps.listPluginManifests();
+      const plugins = manifests
+        .filter((manifest) => manifest?.build && manifest?.hasServer === true)
+        .filter((manifest) => canUserAccessPlugin(user.userId, user.role, manifest.id))
+        .map((manifest) => ({
+          id: manifest.id,
+          name: manifest.name || manifest.id,
+          runtime: manifest.runtime || "native",
+          hasServer: manifest.hasServer === true,
+          enabled: manifest.enabled !== false,
+          build: manifest.build,
+        }));
+      return Response.json({ plugins });
     }
 
     if (req.method === "GET" && url.pathname === "/api/build/list") {

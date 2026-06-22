@@ -1190,6 +1190,146 @@ export default {
 | `ctx.log` | `{debug, info, warn, error}` | Each call is forwarded to the main server logger as `[plugin:<id>] <message>`. |
 | `ctx.broadcast(channel, data)` | function | Push an event to every UI currently subscribed to this plugin's SSE stream. `data` must be JSON-serializable. |
 
+### Build hooks
+
+Server-side plugins can hook the agent builder without shipping any agent-side code. Only plugins with `server.js` or compiled `src/server.ts` can do this; browser UI code is never called from the build process.
+
+Add any of these handlers to your default export:
+
+```js
+export default {
+  onBuildPrepare(ctx, payload) {
+    // Runs once before the builder prepares toolchains. Return a config patch.
+    return { config: { outputName: "custom-agent" } };
+  },
+
+  onBuildTarget(ctx, payload) {
+    // Runs once per target after env/ldflags/tags are assembled.
+    if (payload.platform === "linux-amd64") {
+      return {
+        env: { CGO_ENABLED: "0" },
+        addTags: ["my_feature"],
+        ldflagsAppend: "-X overlord-client/cmd/agent/config.PluginChannel=stable",
+        message: "linux-amd64 template patched",
+      };
+    }
+  },
+
+  buildHooks: {
+    before_donut(ctx, payload) {
+      ctx.log.info(`Donut input: ${payload.file.filename}`);
+    },
+    after_donut(ctx, payload) {
+      ctx.log.info(`Donut output: ${payload.file.filename}`);
+    },
+    before_sgn(ctx, payload) {
+      ctx.log.info(`SGN iterations: ${payload.iterations}`);
+    },
+    after_sgn(ctx, payload) {
+      ctx.log.info(`SGN output: ${payload.file.filename}`);
+    },
+  },
+
+  async onBuildArtifact(ctx, payload) {
+    // Runs after each final artifact is written. Upload/copy/sign here.
+    const filePath = payload.file.path;
+    ctx.log.info(`artifact ready: ${filePath}`);
+    return { message: `saw ${payload.file.filename}` };
+  },
+
+  async onBuildComplete(ctx, payload) {
+    // Runs after all targets are built and before the build stream completes.
+    ctx.log.info(`build ${payload.buildId} produced ${payload.files.length} files`);
+  },
+
+  onBuildFailed(ctx, payload) {
+    ctx.log.warn(`build failed: ${payload.error}`);
+  },
+};
+```
+
+`onBuildTarget` may return:
+
+| Field | Effect |
+|-------|--------|
+| `env` | Merges string values into the Go build environment. |
+| `ldflags` | Replaces the full `-ldflags` string. |
+| `ldflagsAppend` | Appends to the existing `-ldflags` string. |
+| `tags` | Replaces the full tag list. |
+| `addTags` / `removeTags` | Adds or removes build tags. |
+| `outputName` | Renames the target output file. The name is sanitized by the server. |
+| `skip: true` | Skips that target. |
+| `message` / `messages` | Writes informational lines into the build stream. |
+
+The builder also emits these transform-stage hooks. You can implement them either in the `buildHooks` map using the snake-case name, or as a named method such as `onBuildBeforeDonut`.
+
+| Hook | Named method | When it runs |
+|------|--------------|--------------|
+| `post_build` | `onBuildPostBuild` | After the raw Go build output exists. |
+| `before_upx` / `after_upx` | `onBuildBeforeUpx` / `onBuildAfterUpx` | Around UPX compression. |
+| `before_script_wrapper` / `after_script_wrapper` | `onBuildBeforeScriptWrapper` / `onBuildAfterScriptWrapper` | Around `.bat`, `.cmd`, and `.ps1` wrapping. |
+| `before_ipa` / `after_ipa` | `onBuildBeforeIpa` / `onBuildAfterIpa` | Around iOS IPA packaging. |
+| `before_donut` / `after_donut` | `onBuildBeforeDonut` / `onBuildAfterDonut` | Around Windows PE to shellcode conversion with Donut. |
+| `before_linux_shellcode` / `after_linux_shellcode` | `onBuildBeforeLinuxShellcode` / `onBuildAfterLinuxShellcode` | Around Linux ELF shellcode wrapping. |
+| `before_sgn` / `after_sgn` | `onBuildBeforeSgn` / `onBuildAfterSgn` | Around SGN shellcode encoding. |
+| `before_sgn_txt` / `after_sgn_txt` | `onBuildBeforeSgnTxt` / `onBuildAfterSgnTxt` | Around SGN TXT artifact conversion. |
+
+Transform hook payloads include `payload.file` with `{ filename, path, platform, size }`, plus `buildId`, `platform`, `os`, `arch`, `targetKey`, `outDir`, `clientDir`, and `config`. Some stages include extras, such as `outputFilename`/`outputPath`, `donutArch`, `shellcodeArch`, or `iterations`.
+
+`onBuildArtifact` receives `payload.file` with `{ name, filename, path, platform, version, size }`. It can return `file: { filename }` to point the build record at another file already inside `dist-clients`, or `files: [...]` to add extra artifacts from `dist-clients`. Paths outside the build output directory are ignored for downloadable artifact metadata, but the hook can still upload or copy files itself because server-side plugins run with normal server privileges.
+
+Build plugins can declare their own builder UI in `config.json`:
+
+```json
+{
+  "runtime": "server",
+  "build": {
+    "label": "Uploader",
+    "description": "Uploads completed builds to an internal bucket.",
+    "enabledByDefault": true,
+    "settings": [
+      {
+        "key": "bucket",
+        "label": "Bucket",
+        "type": "string",
+        "required": true,
+        "placeholder": "release-builds"
+      },
+      {
+        "key": "publish",
+        "label": "Publish after build",
+        "type": "boolean",
+        "default": false
+      }
+    ],
+    "actions": [
+      {
+        "id": "shellcode-release",
+        "label": "Shellcode Release",
+        "icon": "fa-solid fa-fire",
+        "setBuild": { "useDonut": true, "useSgn": true },
+        "setSettings": { "publish": true }
+      }
+    ],
+    "requires": [
+      {
+        "field": "useSgn",
+        "truthy": true,
+        "message": "Uploader release mode requires SGN to be enabled."
+      }
+    ]
+  }
+}
+```
+
+Supported setting types are `string`, `textarea`, `number`, `boolean`, and `select`. The Build page saves these values with normal build profiles and sends them as:
+
+```js
+payload.config.buildPlugins[ctx.pluginId] // { enabled, settings }
+```
+
+Buttons declared in `build.actions` can set core builder fields through `setBuild` and plugin fields through `setSettings`. Requirements can check a core build field with `field`, a plugin setting with `pluginSetting`, or selected platforms with `platforms`.
+
 ### Calling the plugin from the UI
 
 Plugin UI JS can call any RPC method:

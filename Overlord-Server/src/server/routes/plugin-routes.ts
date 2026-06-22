@@ -164,21 +164,25 @@ export async function handlePluginRoutes(
     const plugins = await deps.listPluginManifests();
     const enriched = plugins
       .filter((p) => canUserAccessPlugin(user.userId, user.role, p.id))
-      .map((p) => ({
-        ...p,
-        enabled: deps.pluginState.enabled[p.id] !== false,
-        lastError: deps.pluginState.lastError[p.id] || "",
-        autoLoad: deps.pluginState.autoLoad[p.id] === true,
-        autoStartEvents: deps.pluginState.autoStartEvents[p.id] || [],
-        signature: p.signature || { signed: false, trusted: false, valid: false },
-        runtime: p.runtime || "native",
-        apiVersion: p.apiVersion || 1,
-        needs: p.needs || {},
-        needsHash: p.needsHash || computePluginNeedsHash(p.needs),
-        needsApproved: arePluginNeedsApproved(deps.pluginState, p.id, p.needs),
-        hasServer: p.hasServer === true || deps.pluginRuntime.hasServerCode(p.id),
-        serverRunning: deps.pluginRuntime.isRunning(p.id),
-      }));
+      .map((p) => {
+        const runtime = p.runtime || "native";
+        const isServerOnly = runtime === "server";
+        return {
+          ...p,
+          enabled: deps.pluginState.enabled[p.id] !== false,
+          lastError: deps.pluginState.lastError[p.id] || "",
+          autoLoad: isServerOnly ? false : deps.pluginState.autoLoad[p.id] === true,
+          autoStartEvents: isServerOnly ? [] : deps.pluginState.autoStartEvents[p.id] || [],
+          signature: p.signature || { signed: false, trusted: false, valid: false },
+          runtime,
+          apiVersion: p.apiVersion || 1,
+          needs: p.needs || {},
+          needsHash: p.needsHash || computePluginNeedsHash(p.needs),
+          needsApproved: arePluginNeedsApproved(deps.pluginState, p.id, p.needs),
+          hasServer: p.hasServer === true || deps.pluginRuntime.hasServerCode(p.id),
+          serverRunning: deps.pluginRuntime.isRunning(p.id),
+        };
+      });
     return Response.json({ plugins: enriched });
   }
 
@@ -261,6 +265,7 @@ export async function handlePluginRoutes(
     const manifests = await deps.listPluginManifests();
     const plugins = manifests
       .filter((manifest) => canUserAccessPlugin(user.userId, user.role, manifest.id))
+      .filter((manifest) => manifest.runtime !== "server")
       .map((manifest) => ({
         id: manifest.id,
         name: manifest.name || manifest.id,
@@ -451,6 +456,17 @@ export async function handlePluginRoutes(
       body = await req.json();
     } catch {}
     const autoLoad = !!body.autoLoad;
+    const manifest = await loadManifest(pluginId);
+
+    if (manifest.runtime === "server") {
+      delete deps.pluginState.autoLoad[pluginId];
+      delete deps.pluginState.autoStartEvents[pluginId];
+      await deps.savePluginState();
+      return Response.json(
+        { ok: false, error: "Server-side plugins do not support client auto-load" },
+        { status: 400 },
+      );
+    }
 
     if (autoLoad && deps.pluginState.enabled[pluginId] === false) {
       return Response.json(
@@ -867,6 +883,13 @@ export async function handlePluginRoutes(
     } catch (error) {
       if (error instanceof Response) return error;
       return new Response("Forbidden", { status: 403 });
+    }
+    const manifest = await loadManifest(pluginId);
+    if (manifest.runtime === "server") {
+      return Response.json(
+        { ok: false, error: "Server-side plugins do not load onto clients" },
+        { status: 400 },
+      );
     }
     const target = clientManager.getClient(targetId);
     if (!target) return new Response("Not found", { status: 404 });

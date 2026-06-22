@@ -114,9 +114,12 @@ function renderPlugins(plugins) {
     return;
   }
   for (const plugin of plugins) {
+    const isServerOnly = plugin.runtime === "server";
     const card = document.createElement("div");
     card.className =
-      "rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-3 flex items-center justify-between";
+      isServerOnly
+        ? "rounded-xl border border-fuchsia-800/60 bg-fuchsia-950/20 px-4 py-3 flex items-center justify-between"
+        : "rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-3 flex items-center justify-between";
     const meta = document.createElement("div");
     const titleRow = document.createElement("div");
     titleRow.className = "flex items-center gap-2";
@@ -137,13 +140,17 @@ function renderPlugins(plugins) {
     const isWasm = plugin.runtime === "wasm";
     const isV2 = Number(plugin.apiVersion || 1) >= 2;
     runtimeBadge.className = `inline-flex items-center gap-1 text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full border ${
-      isWasm
+      isServerOnly
+        ? "text-fuchsia-200 border-fuchsia-700 bg-fuchsia-950/50"
+        : isWasm
         ? "text-cyan-300 border-cyan-700 bg-cyan-950/40"
         : isV2
           ? "text-emerald-300 border-emerald-700 bg-emerald-950/40"
         : "text-slate-300 border-slate-700 bg-slate-900/60"
     }`;
-    runtimeBadge.innerHTML = isWasm
+    runtimeBadge.innerHTML = isServerOnly
+      ? '<i class="fa-solid fa-server"></i> Server Extension'
+      : isWasm
       ? '<i class="fa-solid fa-cube"></i> WASM 2.0'
       : isV2
         ? '<i class="fa-solid fa-code"></i> Plugin 2.0'
@@ -171,11 +178,36 @@ function renderPlugins(plugins) {
       needsBox.innerHTML = `
         <div class="${plugin.needsApproved ? "text-emerald-300" : "text-amber-300"}">
           <i class="fa-solid ${plugin.needsApproved ? "fa-lock-open" : "fa-lock"} mr-1"></i>
-          ${plugin.needsApproved ? "Needs approved" : "Needs approval before load"}
+          ${plugin.needsApproved ? "Needs approved" : isServerOnly ? "Needs approval before enable" : "Needs approval before load"}
         </div>
         ${needLines.map((line) => `<div class="font-mono text-slate-400">${escapeHtml(line)}</div>`).join("")}
       `;
       meta.appendChild(needsBox);
+    }
+    if (isServerOnly) {
+      const serverBox = document.createElement("div");
+      serverBox.className = "mt-2 flex flex-wrap items-center gap-2 text-xs";
+      const state = document.createElement("span");
+      state.className = `inline-flex items-center gap-1 px-2 py-1 rounded-lg border ${
+        plugin.serverRunning
+          ? "text-emerald-200 border-emerald-700 bg-emerald-950/40"
+          : plugin.enabled
+            ? "text-amber-200 border-amber-700 bg-amber-950/40"
+            : "text-slate-300 border-slate-700 bg-slate-900/60"
+      }`;
+      state.innerHTML = plugin.serverRunning
+        ? '<i class="fa-solid fa-circle-play"></i> Worker running'
+        : plugin.enabled
+          ? '<i class="fa-solid fa-triangle-exclamation"></i> Enabled, worker stopped'
+          : '<i class="fa-solid fa-circle-stop"></i> Disabled';
+      serverBox.appendChild(state);
+      if (plugin.build) {
+        const buildBadge = document.createElement("span");
+        buildBadge.className = "inline-flex items-center gap-1 px-2 py-1 rounded-lg border text-blue-200 border-blue-700 bg-blue-950/40";
+        buildBadge.innerHTML = '<i class="fa-solid fa-hammer"></i> Build plugin';
+        serverBox.appendChild(buildBadge);
+      }
+      meta.appendChild(serverBox);
     }
     const actions = document.createElement("div");
     actions.className = "flex items-center gap-2";
@@ -186,9 +218,13 @@ function renderPlugins(plugins) {
       (plugin.enabled
         ? " border-emerald-600 text-emerald-200 bg-emerald-900/40"
         : " border-slate-600 text-slate-300 bg-slate-800/60");
-    toggle.innerHTML = plugin.enabled
-      ? '<i class="fa-solid fa-toggle-on"></i> Enabled'
-      : '<i class="fa-solid fa-toggle-off"></i> Disabled';
+    toggle.innerHTML = isServerOnly
+      ? plugin.enabled
+        ? '<i class="fa-solid fa-power-off"></i> Disable'
+        : '<i class="fa-solid fa-server"></i> Enable'
+      : plugin.enabled
+        ? '<i class="fa-solid fa-toggle-on"></i> Enabled'
+        : '<i class="fa-solid fa-toggle-off"></i> Disabled';
     toggle.addEventListener("click", async () => {
       const wantEnabled = !plugin.enabled;
       try {
@@ -219,56 +255,59 @@ function renderPlugins(plugins) {
       }
     });
 
-    const autoLoadBtn = document.createElement("button");
-    const autoLoadDisabled = !plugin.enabled;
-    autoLoadBtn.className =
-      "inline-flex items-center gap-2 px-3 py-2 rounded-lg border" +
-      (autoLoadDisabled
-        ? " border-slate-700 text-slate-500 bg-slate-900/40 cursor-not-allowed opacity-50"
+    let autoLoadBtn = null;
+    if (!isServerOnly) {
+      autoLoadBtn = document.createElement("button");
+      const autoLoadDisabled = !plugin.enabled;
+      autoLoadBtn.className =
+        "inline-flex items-center gap-2 px-3 py-2 rounded-lg border" +
+        (autoLoadDisabled
+          ? " border-slate-700 text-slate-500 bg-slate-900/40 cursor-not-allowed opacity-50"
+          : plugin.autoLoad
+            ? " border-amber-600 text-amber-200 bg-amber-900/40"
+            : " border-slate-600 text-slate-300 bg-slate-800/60");
+      autoLoadBtn.innerHTML = plugin.autoLoad
+        ? '<i class="fa-solid fa-bolt"></i> Auto-load'
+        : '<i class="fa-solid fa-bolt-lightning"></i> Auto-load off';
+      autoLoadBtn.title = autoLoadDisabled
+        ? "Plugin must be enabled before auto-load can be turned on"
         : plugin.autoLoad
-          ? " border-amber-600 text-amber-200 bg-amber-900/40"
-          : " border-slate-600 text-slate-300 bg-slate-800/60");
-    autoLoadBtn.innerHTML = plugin.autoLoad
-      ? '<i class="fa-solid fa-bolt"></i> Auto-load'
-      : '<i class="fa-solid fa-bolt-lightning"></i> Auto-load off';
-    autoLoadBtn.title = autoLoadDisabled
-      ? "Plugin must be enabled before auto-load can be turned on"
-      : plugin.autoLoad
-        ? "Plugin will auto-load on all new client connections. Click to disable."
-        : "Click to auto-load this plugin on all new client connections.";
-    if (autoLoadDisabled) {
-      autoLoadBtn.disabled = true;
-    } else {
-      autoLoadBtn.addEventListener("click", async () => {
-        const res = await fetch(`/api/plugins/${plugin.id}/autoload`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            autoLoad: !plugin.autoLoad,
-            autoStartEvents: plugin.autoStartEvents || [],
-          }),
-        });
-        if (!res.ok) {
-          const data = await res.json().catch(() => null);
-          if (data && data.error === "needs_approval_required") {
-            showNeedsApprovalModal(plugin, data.needs, data.needsHash, async () => {
-              await fetch(`/api/plugins/${plugin.id}/autoload`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  autoLoad: !plugin.autoLoad,
-                  autoStartEvents: plugin.autoStartEvents || [],
-                }),
+          ? "Plugin will auto-load on all new client connections. Click to disable."
+          : "Click to auto-load this plugin on all new client connections.";
+      if (autoLoadDisabled) {
+        autoLoadBtn.disabled = true;
+      } else {
+        autoLoadBtn.addEventListener("click", async () => {
+          const res = await fetch(`/api/plugins/${plugin.id}/autoload`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              autoLoad: !plugin.autoLoad,
+              autoStartEvents: plugin.autoStartEvents || [],
+            }),
+          });
+          if (!res.ok) {
+            const data = await res.json().catch(() => null);
+            if (data && data.error === "needs_approval_required") {
+              showNeedsApprovalModal(plugin, data.needs, data.needsHash, async () => {
+                await fetch(`/api/plugins/${plugin.id}/autoload`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    autoLoad: !plugin.autoLoad,
+                    autoStartEvents: plugin.autoStartEvents || [],
+                  }),
+                });
+                await refresh();
               });
-              await refresh();
-            });
+              return;
+            }
+            setStatus(`Auto-load toggle failed: ${data?.error || res.statusText}`, true);
             return;
           }
-          setStatus(`Auto-load toggle failed: ${data?.error || res.statusText}`, true);
-          return;
-        }
-        await refresh();
-      });
+          await refresh();
+        });
+      }
     }
 
     if (needLines.length && !plugin.needsApproved) {
@@ -296,7 +335,7 @@ function renderPlugins(plugins) {
       await refresh();
     });
     actions.appendChild(toggle);
-    actions.appendChild(autoLoadBtn);
+    if (autoLoadBtn) actions.appendChild(autoLoadBtn);
     actions.appendChild(removeBtn);
     card.appendChild(meta);
     card.appendChild(actions);
@@ -339,7 +378,7 @@ function showNeedsApprovalModal(plugin, needs, needsHash, afterApprove) {
         <i class="fa-solid fa-key text-2xl text-amber-300"></i>
         <h3 class="text-lg font-semibold text-slate-100">Approve Plugin Needs</h3>
       </div>
-      <p class="text-sm text-slate-300 mb-3"><strong class="text-slate-100">${escapeHtml(plugin.name || plugin.id)}</strong> is asking for filesystem bridges before it can be sent to clients.</p>
+      <p class="text-sm text-slate-300 mb-3"><strong class="text-slate-100">${escapeHtml(plugin.name || plugin.id)}</strong> is asking for filesystem bridges before it can ${plugin.runtime === "server" ? "be enabled" : "be sent to clients"}.</p>
       <div class="rounded-lg border border-slate-700 bg-slate-950/70 p-3 mb-3 space-y-2">
         ${needLines.length ? needLines.map((line) => `<div class="text-xs font-mono text-slate-300">${escapeHtml(line)}</div>`).join("") : '<div class="text-sm text-slate-400">No filesystem needs declared.</div>'}
       </div>

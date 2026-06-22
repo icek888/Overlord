@@ -12,6 +12,27 @@ type PluginExports = {
   setup?: (ctx: PluginContext) => unknown | Promise<unknown>;
   onEvent?: (ctx: PluginContext, clientId: string, event: string, payload: unknown) => unknown | Promise<unknown>;
   rpc?: Record<string, (ctx: PluginContext, params: unknown, meta: { caller: { id: number; role: string } }) => unknown | Promise<unknown>>;
+  buildHooks?: Record<string, (ctx: PluginContext, payload: unknown) => unknown | Promise<unknown>>;
+  onBuildPrepare?: (ctx: PluginContext, payload: unknown) => unknown | Promise<unknown>;
+  onBuildTarget?: (ctx: PluginContext, payload: unknown) => unknown | Promise<unknown>;
+  onBuildPostBuild?: (ctx: PluginContext, payload: unknown) => unknown | Promise<unknown>;
+  onBuildBeforeUpx?: (ctx: PluginContext, payload: unknown) => unknown | Promise<unknown>;
+  onBuildAfterUpx?: (ctx: PluginContext, payload: unknown) => unknown | Promise<unknown>;
+  onBuildBeforeScriptWrapper?: (ctx: PluginContext, payload: unknown) => unknown | Promise<unknown>;
+  onBuildAfterScriptWrapper?: (ctx: PluginContext, payload: unknown) => unknown | Promise<unknown>;
+  onBuildBeforeIpa?: (ctx: PluginContext, payload: unknown) => unknown | Promise<unknown>;
+  onBuildAfterIpa?: (ctx: PluginContext, payload: unknown) => unknown | Promise<unknown>;
+  onBuildBeforeDonut?: (ctx: PluginContext, payload: unknown) => unknown | Promise<unknown>;
+  onBuildAfterDonut?: (ctx: PluginContext, payload: unknown) => unknown | Promise<unknown>;
+  onBuildBeforeLinuxShellcode?: (ctx: PluginContext, payload: unknown) => unknown | Promise<unknown>;
+  onBuildAfterLinuxShellcode?: (ctx: PluginContext, payload: unknown) => unknown | Promise<unknown>;
+  onBuildBeforeSgn?: (ctx: PluginContext, payload: unknown) => unknown | Promise<unknown>;
+  onBuildAfterSgn?: (ctx: PluginContext, payload: unknown) => unknown | Promise<unknown>;
+  onBuildBeforeSgnTxt?: (ctx: PluginContext, payload: unknown) => unknown | Promise<unknown>;
+  onBuildAfterSgnTxt?: (ctx: PluginContext, payload: unknown) => unknown | Promise<unknown>;
+  onBuildArtifact?: (ctx: PluginContext, payload: unknown) => unknown | Promise<unknown>;
+  onBuildComplete?: (ctx: PluginContext, payload: unknown) => unknown | Promise<unknown>;
+  onBuildFailed?: (ctx: PluginContext, payload: unknown) => unknown | Promise<unknown>;
   teardown?: (ctx: PluginContext) => unknown | Promise<unknown>;
 };
 
@@ -114,6 +135,49 @@ self.onmessage = async (e: MessageEvent<WorkerInbound>) => {
       const stack = err instanceof Error ? err.stack || "" : "";
       console.error(`[plugin-worker] RPC ${msg.method} error: ${error}`, stack);
       send({ type: "rpc_reply", id: msg.id, ok: false, error });
+    }
+    return;
+  }
+
+  if (msg.type === "build_hook") {
+    if (!plugin || !ctx) {
+      send({ type: "build_hook_reply", id: msg.id, ok: false, error: "Plugin not initialised" });
+      return;
+    }
+    const handler =
+      plugin.buildHooks?.[msg.hook] ||
+      (msg.hook === "prepare" ? plugin.onBuildPrepare : undefined) ||
+      (msg.hook === "target" ? plugin.onBuildTarget : undefined) ||
+      (msg.hook === "post_build" ? plugin.onBuildPostBuild : undefined) ||
+      (msg.hook === "before_upx" ? plugin.onBuildBeforeUpx : undefined) ||
+      (msg.hook === "after_upx" ? plugin.onBuildAfterUpx : undefined) ||
+      (msg.hook === "before_script_wrapper" ? plugin.onBuildBeforeScriptWrapper : undefined) ||
+      (msg.hook === "after_script_wrapper" ? plugin.onBuildAfterScriptWrapper : undefined) ||
+      (msg.hook === "before_ipa" ? plugin.onBuildBeforeIpa : undefined) ||
+      (msg.hook === "after_ipa" ? plugin.onBuildAfterIpa : undefined) ||
+      (msg.hook === "before_donut" ? plugin.onBuildBeforeDonut : undefined) ||
+      (msg.hook === "after_donut" ? plugin.onBuildAfterDonut : undefined) ||
+      (msg.hook === "before_linux_shellcode" ? plugin.onBuildBeforeLinuxShellcode : undefined) ||
+      (msg.hook === "after_linux_shellcode" ? plugin.onBuildAfterLinuxShellcode : undefined) ||
+      (msg.hook === "before_sgn" ? plugin.onBuildBeforeSgn : undefined) ||
+      (msg.hook === "after_sgn" ? plugin.onBuildAfterSgn : undefined) ||
+      (msg.hook === "before_sgn_txt" ? plugin.onBuildBeforeSgnTxt : undefined) ||
+      (msg.hook === "after_sgn_txt" ? plugin.onBuildAfterSgnTxt : undefined) ||
+      (msg.hook === "artifact" ? plugin.onBuildArtifact : undefined) ||
+      (msg.hook === "complete" ? plugin.onBuildComplete : undefined) ||
+      (msg.hook === "failed" ? plugin.onBuildFailed : undefined);
+    if (typeof handler !== "function") {
+      send({ type: "build_hook_reply", id: msg.id, ok: true, result: null });
+      return;
+    }
+    try {
+      const result = await handler(ctx, msg.payload);
+      send({ type: "build_hook_reply", id: msg.id, ok: true, result: result ?? null });
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      const stack = err instanceof Error ? err.stack || "" : "";
+      console.error(`[plugin-worker] build hook ${msg.hook} error: ${error}`, stack);
+      send({ type: "build_hook_reply", id: msg.id, ok: false, error });
     }
     return;
   }

@@ -335,7 +335,7 @@ export type PluginManifest = {
   id: string;
   name: string;
   apiVersion?: number;
-  runtime?: "native" | "wasm" | string;
+  runtime?: "native" | "wasm" | "server" | string;
   version?: string;
   description?: string;
   binary?: string;
@@ -352,7 +352,52 @@ export type PluginManifest = {
     label?: string;
     icon?: string;
   };
+  build?: PluginBuildIntegration;
   hasServer?: boolean;
+};
+
+export type PluginBuildIntegration = {
+  enabledByDefault?: boolean;
+  label?: string;
+  description?: string;
+  settings?: PluginBuildSetting[];
+  actions?: PluginBuildAction[];
+  requires?: PluginBuildRequirement[];
+};
+
+export type PluginBuildSetting = {
+  key: string;
+  label?: string;
+  type?: "string" | "number" | "boolean" | "select" | "textarea" | string;
+  default?: unknown;
+  placeholder?: string;
+  description?: string;
+  required?: boolean;
+  min?: number;
+  max?: number;
+  options?: Array<{ value: string; label?: string } | string>;
+};
+
+export type PluginBuildAction = {
+  id: string;
+  label: string;
+  icon?: string;
+  description?: string;
+  setBuild?: Record<string, unknown>;
+  setSettings?: Record<string, unknown>;
+  requires?: PluginBuildRequirement[];
+};
+
+export type PluginBuildRequirement = {
+  field?: string;
+  pluginSetting?: string;
+  equals?: unknown;
+  notEquals?: unknown;
+  truthy?: boolean;
+  falsy?: boolean;
+  includes?: unknown;
+  platforms?: string[];
+  message?: string;
 };
 
 export type PluginFileNeed = {

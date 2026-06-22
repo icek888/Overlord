@@ -195,6 +195,7 @@ export async function ensurePluginExtracted(
 
   const runtime = normalizePluginRuntime(extraConfig.runtime, wasmEntry !== null);
   const needs = normalizePluginNeeds(extraConfig.needs);
+  const build = normalizePluginBuildIntegration(extraConfig.build);
   const manifest: PluginManifest = {
     id: safeId,
     name: extraConfig.name || safeId,
@@ -212,6 +213,7 @@ export async function ensurePluginExtracted(
       js: `${safeId}.js`,
     },
     ...(extraConfig.navbar && { navbar: extraConfig.navbar }),
+    ...(build && { build }),
     hasServer: serverEntry !== null || !!serverTsEntry,
   };
   await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2));
@@ -620,6 +622,71 @@ function normalizePluginRuntime(runtime: any, hasWasm: boolean): "native" | "was
   if (value === "wasm" || hasWasm) return "wasm";
   if (value === "server") return "server";
   return "native";
+}
+
+function normalizePluginBuildIntegration(raw: any): any | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const build: any = {};
+  if (typeof raw.enabledByDefault === "boolean") build.enabledByDefault = raw.enabledByDefault;
+  if (typeof raw.label === "string" && raw.label.trim()) build.label = raw.label.trim().slice(0, 80);
+  if (typeof raw.description === "string" && raw.description.trim()) build.description = raw.description.trim().slice(0, 300);
+
+  const settings: any[] = [];
+  if (Array.isArray(raw.settings)) {
+    for (const item of raw.settings.slice(0, 20)) {
+      if (!item || typeof item !== "object") continue;
+      const key = typeof item.key === "string" ? item.key.trim() : "";
+      if (!/^[A-Za-z0-9_.-]{1,64}$/.test(key)) continue;
+      const type = typeof item.type === "string" ? item.type.trim().toLowerCase() : "string";
+      if (!["string", "number", "boolean", "select", "textarea"].includes(type)) continue;
+      const setting: any = { key, type };
+      if (typeof item.label === "string" && item.label.trim()) setting.label = item.label.trim().slice(0, 80);
+      if (typeof item.placeholder === "string") setting.placeholder = item.placeholder.slice(0, 120);
+      if (typeof item.description === "string" && item.description.trim()) setting.description = item.description.trim().slice(0, 240);
+      if (typeof item.required === "boolean") setting.required = item.required;
+      if (typeof item.min === "number" && Number.isFinite(item.min)) setting.min = item.min;
+      if (typeof item.max === "number" && Number.isFinite(item.max)) setting.max = item.max;
+      if (item.default !== undefined) setting.default = item.default;
+      if (Array.isArray(item.options)) {
+        const options = item.options.slice(0, 50).map((opt: any) => {
+          if (typeof opt === "string") return opt.slice(0, 120);
+          if (opt && typeof opt === "object" && typeof opt.value === "string") {
+            return {
+              value: opt.value.slice(0, 120),
+              ...(typeof opt.label === "string" && { label: opt.label.slice(0, 120) }),
+            };
+          }
+          return null;
+        }).filter(Boolean);
+        if (options.length > 0) setting.options = options;
+      }
+      settings.push(setting);
+    }
+  }
+  if (settings.length > 0) build.settings = settings;
+
+  const actions: any[] = [];
+  if (Array.isArray(raw.actions)) {
+    for (const item of raw.actions.slice(0, 12)) {
+      if (!item || typeof item !== "object") continue;
+      const id = typeof item.id === "string" ? item.id.trim() : "";
+      const label = typeof item.label === "string" ? item.label.trim() : "";
+      if (!/^[A-Za-z0-9_.-]{1,64}$/.test(id) || !label) continue;
+      actions.push({
+        id,
+        label: label.slice(0, 80),
+        ...(typeof item.icon === "string" && { icon: item.icon.trim().slice(0, 80) }),
+        ...(typeof item.description === "string" && { description: item.description.trim().slice(0, 240) }),
+        ...(item.setBuild && typeof item.setBuild === "object" && !Array.isArray(item.setBuild) && { setBuild: item.setBuild }),
+        ...(item.setSettings && typeof item.setSettings === "object" && !Array.isArray(item.setSettings) && { setSettings: item.setSettings }),
+        ...(Array.isArray(item.requires) && { requires: item.requires.slice(0, 20) }),
+      });
+    }
+  }
+  if (actions.length > 0) build.actions = actions;
+  if (Array.isArray(raw.requires)) build.requires = raw.requires.slice(0, 20);
+
+  return Object.keys(build).length > 0 ? build : undefined;
 }
 
 export function detectPluginIdFromZip(zip: any): string | null {

@@ -11,7 +11,7 @@ type Subscriber = {
   close: () => void;
 };
 
-type PendingRpc = {
+type PendingCall = {
   resolve: (value: unknown) => void;
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
@@ -24,12 +24,14 @@ type PluginInstance = {
   resolveReady: () => void;
   rejectReady: (err: Error) => void;
   isReady: boolean;
-  pending: Map<string, PendingRpc>;
+  pending: Map<string, PendingCall>;
+  pendingBuildHooks: Map<string, PendingCall>;
   subscribers: Set<Subscriber>;
   startedAt: number;
 };
 
 const RPC_TIMEOUT_MS = 30_000;
+const BUILD_HOOK_TIMEOUT_MS = 5 * 60_000;
 const SHUTDOWN_GRACE_MS = 750;
 
 export type PluginRuntime = {
@@ -48,6 +50,8 @@ export type PluginRuntime = {
     params: unknown,
     caller: PluginRpcCaller,
   ) => Promise<unknown>;
+  runBuildHook: (pluginId: string, hook: string, payload: unknown) => Promise<unknown>;
+  runBuildHookForAll: (hook: string, payload: unknown) => Promise<Array<{ pluginId: string; result: unknown }>>;
   subscribe: (
     pluginId: string,
     send: (sse: string) => void,
@@ -55,6 +59,7 @@ export type PluginRuntime = {
   ) => (() => void) | null;
   isRunning: (pluginId: string) => boolean;
   hasServerCode: (pluginId: string) => boolean;
+  runningPluginIds: () => string[];
   shutdownAll: () => Promise<void>;
 };
 
@@ -105,6 +110,7 @@ export function createPluginRuntime(opts: PluginRuntimeOptions): PluginRuntime {
       rejectReady,
       isReady: false,
       pending: new Map(),
+      pendingBuildHooks: new Map(),
       subscribers: new Set(),
       startedAt: Date.now(),
     };
@@ -161,6 +167,11 @@ export function createPluginRuntime(opts: PluginRuntimeOptions): PluginRuntime {
       pending.reject(new Error("Plugin runtime stopped"));
     }
     inst.pending.clear();
+    for (const pending of inst.pendingBuildHooks.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error("Plugin runtime stopped"));
+    }
+    inst.pendingBuildHooks.clear();
 
     try {
       const shutdownMsg: WorkerInbound = { type: "shutdown" };
@@ -237,6 +248,50 @@ export function createPluginRuntime(opts: PluginRuntimeOptions): PluginRuntime {
     return inst.isReady ? callOnReady() : inst.ready.then(callOnReady);
   }
 
+  function runBuildHook(
+    pluginId: string,
+    hook: string,
+    payload: unknown,
+  ): Promise<unknown> {
+    const inst = instances.get(pluginId);
+    if (!inst) {
+      return Promise.reject(new Error("Plugin runtime not running"));
+    }
+    const callOnReady = () =>
+      new Promise((resolve, reject) => {
+        const id = uuidv4();
+        const timer = setTimeout(() => {
+          if (inst.pendingBuildHooks.delete(id)) {
+            reject(new Error(`Build hook timeout: ${hook}`));
+          }
+        }, BUILD_HOOK_TIMEOUT_MS);
+        inst.pendingBuildHooks.set(id, { resolve, reject, timer });
+        const msg: WorkerInbound = { type: "build_hook", id, hook, payload };
+        try {
+          inst.worker.postMessage(msg);
+        } catch (err) {
+          clearTimeout(timer);
+          inst.pendingBuildHooks.delete(id);
+          reject(err instanceof Error ? err : new Error(String(err)));
+        }
+      });
+    return inst.isReady ? callOnReady() : inst.ready.then(callOnReady);
+  }
+
+  async function runBuildHookForAll(
+    hook: string,
+    payload: unknown,
+  ): Promise<Array<{ pluginId: string; result: unknown }>> {
+    const results: Array<{ pluginId: string; result: unknown }> = [];
+    for (const pluginId of runningPluginIds()) {
+      const result = await runBuildHook(pluginId, hook, payload);
+      if (result !== null && result !== undefined) {
+        results.push({ pluginId, result });
+      }
+    }
+    return results;
+  }
+
   function subscribe(
     pluginId: string,
     send: (sse: string) => void,
@@ -270,6 +325,15 @@ export function createPluginRuntime(opts: PluginRuntimeOptions): PluginRuntime {
       else pending.reject(new Error(msg.error));
       return;
     }
+    if (msg.type === "build_hook_reply") {
+      const pending = inst.pendingBuildHooks.get(msg.id);
+      if (!pending) return;
+      clearTimeout(pending.timer);
+      inst.pendingBuildHooks.delete(msg.id);
+      if (msg.ok) pending.resolve(msg.result);
+      else pending.reject(new Error(msg.error));
+      return;
+    }
     if (msg.type === "broadcast") {
       const safeChannel = String(msg.channel || "message").replace(/[\r\n]/g, "");
       const dataLine = JSON.stringify(msg.data ?? null);
@@ -293,15 +357,22 @@ export function createPluginRuntime(opts: PluginRuntimeOptions): PluginRuntime {
     await Promise.all(ids.map((id) => stopPlugin(id)));
   }
 
+  function runningPluginIds(): string[] {
+    return Array.from(instances.keys()).sort();
+  }
+
   return {
     startPlugin,
     stopPlugin,
     restartPlugin,
     dispatchClientEvent,
     rpc,
+    runBuildHook,
+    runBuildHookForAll,
     subscribe,
     isRunning,
     hasServerCode,
+    runningPluginIds,
     shutdownAll,
   };
 }

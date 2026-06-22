@@ -303,6 +303,7 @@ const startBuildProcess = (buildId: string, buildConfig: any) =>
     generateBuildMutex,
     sanitizeOutputName,
     fileShareRoot: FILE_SHARE_ROOT,
+    runBuildHookForAll: (hook, payload) => pluginRuntime.runBuildHookForAll(hook, payload),
   });
 
 const pendingHttpDownloads = new Map<string, PendingHttpDownload>();
@@ -496,6 +497,7 @@ async function startServer() {
       startBuildProcess,
       sanitizeMutex,
       allowedPlatforms: ALLOWED_PLATFORMS,
+      listPluginManifests,
     },
     deploy: {
       DEPLOY_ROOT,

