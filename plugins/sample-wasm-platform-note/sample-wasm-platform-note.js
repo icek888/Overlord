@@ -7,6 +7,10 @@
     arch: document.getElementById("sample-wasm-platform-note-arch"),
     mkdir: document.getElementById("sample-wasm-platform-note-mkdir"),
     write: document.getElementById("sample-wasm-platform-note-write"),
+    desktopFile: document.getElementById("sample-wasm-platform-note-desktop-file"),
+    desktopSize: document.getElementById("sample-wasm-platform-note-desktop-size"),
+    desktopList: document.getElementById("sample-wasm-platform-note-desktop-list"),
+    desktopRead: document.getElementById("sample-wasm-platform-note-desktop-read"),
   };
   const clientId = new URLSearchParams(window.location.search).get("clientId");
   const pluginId = "sample-wasm-platform-note";
@@ -34,6 +38,10 @@
     if (fields.arch) fields.arch.textContent = info.arch || "-";
     if (fields.mkdir) fields.mkdir.textContent = String(info.mkdir ?? "-");
     if (fields.write) fields.write.textContent = String(info.write ?? "-");
+    if (fields.desktopFile) fields.desktopFile.textContent = info.desktopFile || "(no readable file found)";
+    if (fields.desktopSize) fields.desktopSize.textContent = Number.isFinite(info.desktopSize) && info.desktopSize >= 0 ? `${info.desktopSize} bytes` : "-";
+    if (fields.desktopList) fields.desktopList.textContent = String(info.desktopList ?? "-");
+    if (fields.desktopRead) fields.desktopRead.textContent = String(info.desktopRead ?? "-");
     setStatus(info.write === 0 ? "Platform note written" : "Platform note result received");
     log(JSON.stringify(info, null, 2));
   }

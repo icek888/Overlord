@@ -333,7 +333,7 @@ Current Plugin 2.0 samples:
 |--------|---------|
 | `sample-wasm` | C/WASI file bridge sample using `pluginData`, `downloads`, and `overlord_host_info`. |
 | `sample-wasm-hostinfo` | TinyGo sample that queries HostInfo from a universal WASM module. |
-| `sample-wasm-platform-note` | Rust sample that branches by `os`/`arch` inside one WASM module and writes a platform-specific note. |
+| `sample-wasm-platform-note` | Rust sample that branches by `os`/`arch`, writes a platform-specific note, and probes Desktop list/read access. |
 | `sample-ts-fullstack` | TypeScript UI plus TypeScript server runtime with shared local modules. |
 
 Legacy native samples remain available:

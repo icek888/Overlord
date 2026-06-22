@@ -1,6 +1,8 @@
 # Sample WASM Platform Note Plugin
 
-This Plugin 2.0 sample is written in Rust. It reads HostInfo, branches on `os` and `arch`, and writes a small note into the approved `pluginData` bucket.
+This Plugin 2.0 sample is written in Rust. It reads HostInfo, branches on `os` and `arch`, writes a small note into the approved `pluginData` bucket, then lists the user's Desktop and attempts to read a small sample from one regular file to prove the file bridge is working.
+
+The manifest requests `pluginData` write/mkdir access and `desktop` list/read access, so changing this sample's permissions will require approving the new needs hash before load.
 
 On Windows, install the Rust WASI target first:
 
