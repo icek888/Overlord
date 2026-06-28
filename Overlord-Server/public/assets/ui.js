@@ -74,6 +74,10 @@ menuStyle.textContent = `
   border-radius: 8px;
   padding: 4px;
   min-width: 196px;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
   gap: 1px;
@@ -92,6 +96,27 @@ menuStyle.textContent = `
   flex-direction: column;
   gap: 1px;
   z-index: 1;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+}
+#ctx-main, #ctx-sub {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148,163,184,0.35) transparent;
+}
+#ctx-main::-webkit-scrollbar,
+#ctx-sub::-webkit-scrollbar {
+  width: 8px;
+}
+#ctx-main::-webkit-scrollbar-thumb,
+#ctx-sub::-webkit-scrollbar-thumb {
+  background: rgba(148,163,184,0.28);
+  border-radius: 999px;
+}
+#ctx-main::-webkit-scrollbar-thumb:hover,
+#ctx-sub::-webkit-scrollbar-thumb:hover {
+  background: rgba(148,163,184,0.45);
 }
 .ctx-row {
   display: flex;
@@ -221,6 +246,8 @@ menuStyle.textContent = `
   }
   #ctx-main, #ctx-sub {
     box-shadow: 0 8px 40px rgba(0, 0, 0, 0.7);
+    max-height: none;
+    overflow: visible;
   }
   #ctx-sub { position: static; margin-top: 0; min-width: 0; width: 100%; border-radius: 0 0 8px 8px; border-top: 1px solid rgba(148,163,184,0.08); left: auto; right: auto; }
   #ctx-main { border-radius: 8px 8px 0 0; }
@@ -290,12 +317,16 @@ function showSubmenu(groupId, rowEl) {
     const mainRect = ctxMain.getBoundingClientRect();
     let offsetY = rowRect.top - mainRect.top;
 
+    ctxSub.style.maxHeight = "calc(100vh - 16px)";
     const subH   = ctxSub.offsetHeight;
     const menuTop = parseFloat(menu.style.top) || 0;
     if (menuTop + offsetY + subH > window.innerHeight - 8) {
       offsetY = Math.max(0, window.innerHeight - 8 - subH - menuTop);
     }
     ctxSub.style.top = offsetY + "px";
+    const subTop = menuTop + offsetY;
+    ctxSub.style.maxHeight = Math.max(120, window.innerHeight - subTop - 8) + "px";
+    ctxSub.scrollTop = 0;
 
     // Flip to left if submenu overflows right edge
     const subW = ctxSub.offsetWidth;
@@ -396,6 +427,8 @@ export function openMenu(clientId, x, y, setContext, options = {}) {
   menu.style.top  = "-9999px";
   menu.style.display = "flex";
   menu.setAttribute("aria-hidden", "false");
+  ctxMain.scrollTop = 0;
+  ctxSub.scrollTop = 0;
 
   requestAnimationFrame(() => {
     const mw = menu.offsetWidth;

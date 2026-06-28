@@ -22,6 +22,7 @@ const scriptsLink = document.getElementById("scripts-link");
 const pluginsLink = document.getElementById("plugins-link");
 const rawServerListCheckbox = document.getElementById("raw-server-list");
 const serverUrlInput = document.getElementById("server-url");
+const serverUrlCurrentBtn = document.getElementById("server-url-current-btn");
 const solMemoCheckbox = document.getElementById("sol-memo");
 const solSettings = document.getElementById("sol-settings");
 const profileSelect = document.getElementById("build-profile-select");
@@ -70,11 +71,23 @@ async function loadServerVersion() {
 
 function getDefaultServerUrlPlaceholder(isRawList) {
   if (isRawList) {
-    const isHttps = window.location.protocol === "https:";
-    const host = window.location.host;
-    return `${isHttps ? "https" : "http"}://${host}/list.txt`;
+    return getCurrentRawServerListUrl();
   }
   return "";
+}
+
+function getCurrentServerHost() {
+  return window.location.host || window.location.hostname || "";
+}
+
+function getCurrentRawServerListUrl() {
+  const protocol = window.location.protocol === "https:" ? "https" : "http";
+  const host = getCurrentServerHost();
+  return host ? `${protocol}://${host}/list.txt` : "";
+}
+
+function getCurrentServerUrlForMode() {
+  return getCurrentServerHost();
 }
 
 function stripServerUrlPrefix(value) {
@@ -93,7 +106,15 @@ function updateServerUrlPlaceholder() {
   if (!serverUrlInput) return;
   const isRaw = rawServerListCheckbox?.checked ?? false;
   serverUrlInput.placeholder = getDefaultServerUrlPlaceholder(isRaw);
+  updateServerUrlCurrentButton();
   updateServerUrlHintMode();
+}
+
+function updateServerUrlCurrentButton() {
+  if (!serverUrlCurrentBtn) return;
+  const isRaw = rawServerListCheckbox?.checked ?? false;
+  serverUrlCurrentBtn.classList.toggle("hidden", isRaw);
+  serverUrlCurrentBtn.disabled = isRaw;
 }
 
 let isBuilding = false;
@@ -563,8 +584,7 @@ function applyFormSettings(settings) {
     solSettings.classList.toggle("hidden", !solMemoCheckbox.checked);
   }
   if (serverUrlInput && rawServerListCheckbox) {
-    serverUrlInput.placeholder = getDefaultServerUrlPlaceholder(rawServerListCheckbox.checked);
-    updateServerUrlHintMode();
+    updateServerUrlPlaceholder();
   }
   applyCryptableMode(document.getElementById("cryptable-mode")?.checked || false);
 }
@@ -836,9 +856,22 @@ if (rawServerListCheckbox && serverUrlInput) {
       // Non-raw mode: bare domain only. The agent prepends wss:// itself.
       serverUrlInput.value = stripServerUrlPrefix(current);
     }
-    serverUrlInput.placeholder = getDefaultServerUrlPlaceholder(isRaw);
-    updateServerUrlHintMode();
+    updateServerUrlPlaceholder();
   });
+
+  if (serverUrlCurrentBtn) {
+    serverUrlCurrentBtn.addEventListener("click", () => {
+      if (solMemoCheckbox?.checked) {
+        solMemoCheckbox.checked = false;
+        if (solSettings) solSettings.classList.add("hidden");
+      }
+      serverUrlInput.value = getCurrentServerUrlForMode();
+      serverUrlInput.dispatchEvent(new Event("input", { bubbles: true }));
+      serverUrlInput.dispatchEvent(new Event("change", { bubbles: true }));
+      saveFormSettings();
+      serverUrlInput.focus();
+    });
+  }
 
   // Live-strip protocol prefixes in non-raw mode so the field stays clean and
   // the user sees their typo corrected immediately.
@@ -891,9 +924,7 @@ if (solMemoCheckbox && solSettings) {
 
     if (isSol && rawServerListCheckbox) {
       rawServerListCheckbox.checked = false;
-      if (serverUrlInput) {
-        serverUrlInput.placeholder = getDefaultServerUrlPlaceholder(false);
-      }
+      updateServerUrlPlaceholder();
     }
 
     if (isSol) {

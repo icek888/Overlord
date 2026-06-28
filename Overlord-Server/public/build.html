@@ -350,8 +350,15 @@
 
                     <div>
                       <label class="block text-sm font-medium text-slate-300 mb-2" for="server-url">Server URL</label>
-                      <input type="text" id="server-url" name="server-url"
-                        class="w-full px-3 py-2 bg-slate-800/60 border border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 transition-colors" />
+                      <div class="flex gap-2">
+                        <input type="text" id="server-url" name="server-url"
+                          class="min-w-0 flex-1 px-3 py-2 bg-slate-800/60 border border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 transition-colors" />
+                        <button type="button" id="server-url-current-btn" aria-label="Use current website host"
+                          title="Use current website host"
+                          class="shrink-0 w-10 h-10 inline-flex items-center justify-center rounded-lg bg-slate-800/70 border border-slate-700 text-slate-300 hover:text-blue-300 hover:border-blue-500 transition-colors">
+                          <i class="fa-solid fa-globe"></i>
+                        </button>
+                      </div>
                       <p id="server-url-hint" class="text-xs text-slate-500 mt-1">
                         Just enter your domain or IP:PORT — no <code class="text-slate-400">wss://</code>, <code class="text-slate-400">https://</code>, or any other prefix.
                       </p>
